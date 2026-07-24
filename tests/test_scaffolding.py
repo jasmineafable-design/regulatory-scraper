@@ -1,5 +1,5 @@
 import pytest
-from core.config import ApplicationConfig
+from core.config import SystemConfig
 from core.logger import setup_logger
 from core.base_adapter import BaseSourceAdapter
 from core.models import RawIssuance, ContentQuality
@@ -21,7 +21,7 @@ def test_logger_creation():
 
 
 def test_config_defaults():
-    config = ApplicationConfig.load_from_env()
+    config = SystemConfig.load()
     assert config.environment in ["development", "production", "test"]
 
 
