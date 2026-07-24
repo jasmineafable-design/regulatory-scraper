@@ -55,3 +55,15 @@ class BusinessEntityConfig:
     entity_full_name: str
     primary_focus: str
     key_topics_of_interest: List[str]
+
+
+@dataclass(frozen=True)
+class IssuanceStateRecord:
+    """Record representing a previously seen and processed issuance stored in state ledger."""
+    issuance_id: str
+    regulator_id: str
+    category_id: str
+    first_seen_timestamp: str
+    processed_status: str  # e.g., "PROCESSED", "BASELINE", "FAILED_NOTIFICATION"
+    title: str
+    canonical_url: str
