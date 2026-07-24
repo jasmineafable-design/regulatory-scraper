@@ -1,4 +1,5 @@
 from core.adapters.bir_adapter import BIRAdapter
+from core.adapters.ic_adapter import ICAdapter
 from core.config import SystemConfig
 from core.logger import setup_logger
 from core.state import StateManager
@@ -17,37 +18,40 @@ def main() -> None:
     # 2. Initialize State Manager Memory
     state_mgr = StateManager()
 
-    # 3. Initialize BIR Adapter
-    bir_adapter = BIRAdapter()
-    logger.info(f"Active Regulator Adapter: {bir_adapter.regulator_id}")
+    # 3. Active Adapters to Execute
+    adapters = [
+        (BIRAdapter(), "RMC", {"target_url": "https://www.bir.gov.ph/revenue-issuances-details"}),
+        (ICAdapter(), "CL", {"target_url": "https://www.insurance.gov.ph/category/circular-letters/"}),
+    ]
 
-    # 4. Process BIR Categories
-    category_id = "RMC"
-    bir_config = {
-        "target_url": "https://www.bir.gov.ph/revenue-issuances-details"
-    }
+    total_new_discoveries = 0
 
-    raw_list = bir_adapter.fetch_latest_issuances(category_id, bir_config)
-    logger.info(f"Fetched {len(raw_list)} raw items from BIR {category_id}")
+    for adapter, category_id, adapter_config in adapters:
+        logger.info(f"--- Running Adapter: {adapter.regulator_id} ({category_id}) ---")
+        raw_list = adapter.fetch_latest_issuances(category_id, adapter_config)
+        logger.info(f"Fetched {len(raw_list)} raw items from {adapter.regulator_id} ({category_id})")
 
-    new_discovered_count = 0
-    for raw_item in raw_list:
-        normalized = bir_adapter.normalize(raw_item)
+        adapter_new_count = 0
+        for raw_item in raw_list:
+            normalized = adapter.normalize(raw_item)
 
-        if not state_mgr.is_seen(normalized.issuance_id):
-            logger.info(f"[NEW DISCOVERY] {normalized.issuance_id} - {normalized.title[:60]}...")
-            state_mgr.record_issuance(normalized, status="PROCESSED")
-            new_discovered_count += 1
-        else:
-            logger.debug(f"[SEEN] Skipping {normalized.issuance_id}")
+            if not state_mgr.is_seen(normalized.issuance_id):
+                logger.info(f"[NEW DISCOVERY] {normalized.issuance_id} - {normalized.title[:60]}...")
+                state_mgr.record_issuance(normalized, status="PROCESSED")
+                adapter_new_count += 1
+            else:
+                logger.debug(f"[SEEN] Skipping {normalized.issuance_id}")
 
-    if new_discovered_count > 0:
+        total_new_discoveries += adapter_new_count
+        logger.info(f"Completed {adapter.regulator_id}: {adapter_new_count} new discoveries.")
+
+    if total_new_discoveries > 0:
         state_mgr.commit()
-        logger.info(f"Committed {new_discovered_count} new issuance records to state file.")
+        logger.info(f"Committed {total_new_discoveries} new issuance records to state ledger.")
     else:
-        logger.info("No new unseen BIR issuances found during this run.")
+        logger.info("No new unseen regulatory issuances found during this run.")
 
-    logger.info("Phase 5 BIR Adapter execution completed successfully.")
+    logger.info("Phase 6 IC Adapter execution completed successfully.")
 
 
 if __name__ == "__main__":
