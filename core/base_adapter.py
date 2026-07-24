@@ -2,7 +2,9 @@ import hashlib
 import re
 from abc import ABC, abstractmethod
 from typing import List, Optional, Tuple
+
 from core.models import ContentQuality, NormalizedIssuance, RawIssuance
+from core.parsing import clean_text
 
 
 class BaseSourceAdapter(ABC):
@@ -20,35 +22,29 @@ class BaseSourceAdapter(ABC):
         pass
 
     def normalize(self, raw: RawIssuance) -> NormalizedIssuance:
-        """Converts raw scraped data into a standardized object.
-        
-        Guarantees:
-        1. A deterministic unique issuance_id even if official number is missing.
-        2. Automated document text quality evaluation.
-        """
+        """Converts raw scraped data into a standardized object."""
         issuance_id = self._resolve_identifier(raw)
-        quality, cleaned_text = self._assess_content_quality(raw.extracted_text)
+        quality, cleaned_text_content = self._assess_content_quality(raw.extracted_text)
 
         return NormalizedIssuance(
             issuance_id=issuance_id,
             regulator_id=raw.regulator_id,
             category_id=raw.category_id,
-            title=raw.title.strip(),
+            title=clean_text(raw.title),
             canonical_url=raw.canonical_url.strip(),
             content_quality=quality,
-            published_date_str=raw.published_date_str,
-            pdf_url=raw.pdf_url,
-            cleaned_text=cleaned_text,
+            published_date_str=clean_text(raw.published_date_str) if raw.published_date_str else None,
+            pdf_url=raw.pdf_url.strip() if raw.pdf_url else None,
+            cleaned_text=cleaned_text_content,
         )
 
     def _resolve_identifier(self, raw: RawIssuance) -> str:
         """Guarantees a unique ID using a SHA256 hash fallback when official numbers are missing."""
         if raw.raw_identifier and raw.raw_identifier.strip():
-            clean_id = re.sub(r"\s+", " ", raw.raw_identifier.strip())
+            clean_id = clean_text(raw.raw_identifier)
             return f"{raw.regulator_id}_{clean_id}"
 
-        # Deterministic Fallback Hash: SHA256(title + date + url)
-        payload = f"{raw.title.strip().lower()}|{raw.published_date_str or ''}|{raw.canonical_url.strip().lower()}"
+        payload = f"{clean_text(raw.title).lower()}|{raw.published_date_str or ''}|{raw.canonical_url.strip().lower()}"
         sha256_hash = hashlib.sha256(payload.encode("utf-8")).hexdigest()[:16]
         return f"{raw.regulator_id}_HASH_{sha256_hash}"
 
@@ -59,13 +55,11 @@ class BaseSourceAdapter(ABC):
         if not text or not text.strip():
             return ContentQuality.UNEXTRACTABLE_PDF, None
 
-        cleaned = text.strip()
+        cleaned = clean_text(text)
 
-        # Minimum length threshold check
         if len(cleaned) < 150:
             return ContentQuality.LOW_QUALITY, cleaned
 
-        # Character quality/density check
         alphanumeric_count = sum(1 for c in cleaned if c.isalnum())
         density = alphanumeric_count / len(cleaned)
 
