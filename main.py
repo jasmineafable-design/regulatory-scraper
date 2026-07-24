@@ -18,10 +18,15 @@ def main() -> None:
     # 2. Initialize State Manager Memory
     state_mgr = StateManager()
 
-    # 3. Active Adapters to Execute
+    # 3. Active Adapters & Categories to Execute
+    ic_adapter = ICAdapter()
+    bir_adapter = BIRAdapter()
+
     adapters = [
-        (BIRAdapter(), "RMC", {"target_url": "https://www.bir.gov.ph/revenue-issuances-details"}),
-        (ICAdapter(), "CL", {"target_url": "https://www.insurance.gov.ph/category/circular-letters/"}),
+        (bir_adapter, "RMC", {"target_url": "https://www.bir.gov.ph/revenue-issuances-details"}),
+        (ic_adapter, "CL", {"target_url": "https://www.insurance.gov.ph/category/circular-letters/"}),
+        (ic_adapter, "ADV", {"target_url": "https://www.insurance.gov.ph/category/advisories/"}),
+        (ic_adapter, "MC", {"target_url": "https://www.insurance.gov.ph/category/memorandum-circulars/"}),
     ]
 
     total_new_discoveries = 0
@@ -43,7 +48,7 @@ def main() -> None:
                 logger.debug(f"[SEEN] Skipping {normalized.issuance_id}")
 
         total_new_discoveries += adapter_new_count
-        logger.info(f"Completed {adapter.regulator_id}: {adapter_new_count} new discoveries.")
+        logger.info(f"Completed {adapter.regulator_id} ({category_id}): {adapter_new_count} new discoveries.")
 
     if total_new_discoveries > 0:
         state_mgr.commit()
