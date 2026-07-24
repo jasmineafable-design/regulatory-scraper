@@ -4,21 +4,25 @@ SAMPLE_IC_HTML = """
 <html>
 <body>
   <table>
-    <tr>
-      <th>Circular No.</th>
-      <th>Subject</th>
-      <th>Link</th>
-    </tr>
-    <tr>
-      <td>CL No. 2026-05</td>
-      <td>Guidelines on Microinsurance Product Licensing for Insurance Companies.</td>
-      <td><a href="/wp-content/uploads/2026/CL2026_05.pdf">Download PDF</a></td>
-    </tr>
-    <tr>
-      <td>Circular Letter No. 2026-01</td>
-      <td>Revised Capital Adequacy Requirements for Life Insurance Companies.</td>
-      <td><a href="/wp-content/uploads/2026/CL2026_01.pdf">Download PDF</a></td>
-    </tr>
+    <thead>
+      <tr>
+        <th>Circular No.</th>
+        <th>Subject</th>
+        <th>Link</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td>CL No. 2026-05</td>
+        <td>Guidelines on Microinsurance Product Licensing for Insurance Companies.</td>
+        <td><a href="/wp-content/uploads/2026/CL2026_05.pdf">Download PDF</a></td>
+      </tr>
+      <tr>
+        <td>Circular Letter No. 2026-01</td>
+        <td>Revised Capital Adequacy Requirements for Life Insurance Companies.</td>
+        <td><a href="/wp-content/uploads/2026/CL2026_01.pdf">Download PDF</a></td>
+      </tr>
+    </tbody>
   </table>
 </body>
 </html>
