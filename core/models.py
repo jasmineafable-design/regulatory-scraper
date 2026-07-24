@@ -1,6 +1,6 @@
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 
 class ContentQuality(Enum):
@@ -36,3 +36,22 @@ class NormalizedIssuance:
     pdf_url: Optional[str] = None
     cleaned_text: Optional[str] = None
     metadata: Dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class ScraperTargetConfig:
+    """Configuration settings for a single regulatory scraping category."""
+    regulator_id: str
+    category_id: str
+    category_name: str
+    enabled: bool
+    check_interval_hours: int = 24
+
+
+@dataclass(frozen=True)
+class BusinessEntityConfig:
+    """Business context guidance for AI risk evaluation."""
+    entity_code: str
+    entity_full_name: str
+    primary_focus: str
+    key_topics_of_interest: List[str]
