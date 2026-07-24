@@ -52,7 +52,11 @@ class ICAdapter(BaseSourceAdapter):
         rows = soup.find_all("tr")
 
         for row in rows:
-            cells = row.find_all(["td", "th"])
+            # Skip rows containing <th> header tags
+            if row.find_all("th"):
+                continue
+
+            cells = row.find_all("td")
             if len(cells) < 2:
                 continue
 
@@ -65,7 +69,8 @@ class ICAdapter(BaseSourceAdapter):
                 href = link_tag["href"]
                 pdf_url = make_absolute_url(source_url, href)
 
-            if not row_text or len(row_text) < 10 or "circular number" in row_text.lower():
+            row_lower = row_text.lower()
+            if not row_text or len(row_text) < 10 or "circular no" in row_lower or "subject" in row_lower and "link" in row_lower:
                 continue
 
             identifier = self._extract_identifier(row_text, category_id)
