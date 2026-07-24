@@ -10,11 +10,17 @@ from core.parsing import clean_text, make_absolute_url
 
 logger = setup_logger("ic_adapter")
 
-DEFAULT_IC_CL_URL = "https://www.insurance.gov.ph/category/circular-letters/"
+# Default URLs for IC Categories
+CATEGORY_URL_MAP = {
+    "CL": "https://www.insurance.gov.ph/category/circular-letters/",
+    "ADV": "https://www.insurance.gov.ph/category/advisories/",
+    "MC": "https://www.insurance.gov.ph/category/memorandum-circulars/",
+}
+DEFAULT_IC_URL = "https://www.insurance.gov.ph/category/circular-letters/"
 
 
 class ICAdapter(BaseSourceAdapter):
-    """Adapter for scraping official issuances from the Insurance Commission (IC)."""
+    """Adapter for scraping official issuances (CL, Advisories, MC) from the Insurance Commission (IC)."""
 
     def __init__(self, http_client: Optional[ScrapingHttpClient] = None):
         self.http_client = http_client or ScrapingHttpClient()
@@ -26,8 +32,8 @@ class ICAdapter(BaseSourceAdapter):
     def fetch_latest_issuances(
         self, category_id: str, config: dict
     ) -> List[RawIssuance]:
-        """Fetches and parses raw issuances for IC categories (e.g., CL, Advisory)."""
-        target_url = config.get("target_url", DEFAULT_IC_CL_URL)
+        """Fetches and parses raw issuances for IC categories (CL, ADV, MC)."""
+        target_url = config.get("target_url") or CATEGORY_URL_MAP.get(category_id, DEFAULT_IC_URL)
         logger.info(f"[{self.regulator_id}] Scraping category '{category_id}' from {target_url}")
 
         try:
@@ -48,11 +54,10 @@ class ICAdapter(BaseSourceAdapter):
         soup = BeautifulSoup(html_content, "html.parser")
         raw_issuances: List[RawIssuance] = []
 
-        # Parse table rows first (IC circular tables)
+        # 1. Parse HTML table rows
         rows = soup.find_all("tr")
 
         for row in rows:
-            # Skip rows containing <th> header tags
             if row.find_all("th"):
                 continue
 
@@ -62,7 +67,6 @@ class ICAdapter(BaseSourceAdapter):
 
             row_text = " ".join(clean_text(cell.get_text()) for cell in cells)
 
-            # Locate link tags pointing to official PDF documents
             pdf_url = None
             link_tag = row.find("a", href=True)
             if link_tag:
@@ -70,7 +74,7 @@ class ICAdapter(BaseSourceAdapter):
                 pdf_url = make_absolute_url(source_url, href)
 
             row_lower = row_text.lower()
-            if not row_text or len(row_text) < 10 or "circular no" in row_lower or "subject" in row_lower and "link" in row_lower:
+            if not row_text or len(row_text) < 10 or "circular no" in row_lower or ("subject" in row_lower and "link" in row_lower):
                 continue
 
             identifier = self._extract_identifier(row_text, category_id)
@@ -87,7 +91,7 @@ class ICAdapter(BaseSourceAdapter):
             )
             raw_issuances.append(raw_item)
 
-        # Fallback: Parse article/list blocks if page isn't structured as a simple table
+        # 2. Fallback: Parse article/post blocks if not formatted as a table
         if not raw_issuances:
             articles = soup.find_all(["article", "li", "div"], class_=re.compile(r"post|entry|item", re.I))
             for item in articles:
@@ -114,12 +118,20 @@ class ICAdapter(BaseSourceAdapter):
         return raw_issuances
 
     def _extract_identifier(self, text: str, category_id: str) -> Optional[str]:
-        """Extracts standard IC circular identifiers using regular expressions."""
+        """Extracts standard IC identifiers for CL, Advisories, and MCs using regex."""
         patterns = [
+            # Circular Letters
             r"(CL\s*No\.?\s*\d+[-–]\d+)",
             r"(Circular\s*Letter\s*No\.?\s*\d+[-–]\d+)",
+            # Memorandum Circulars
+            r"(MC\s*No\.?\s*\d+[-–]\d+)",
+            r"(Memorandum\s*Circular\s*No\.?\s*\d+[-–]\d+)",
+            # Advisories
             r"(Advisory\s*No\.?\s*\d+[-–]\d+)",
+            r"(IC\s*Advisory\s*No\.?\s*\d+[-–]\d+)",
+            # General Fallback
             r"(CL\s*\d+[-–]\d+)",
+            r"(MC\s*\d+[-–]\d+)",
         ]
         for pattern in patterns:
             match = re.search(pattern, text, re.IGNORECASE)
