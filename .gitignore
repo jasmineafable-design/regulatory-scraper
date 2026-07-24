@@ -16,6 +16,9 @@ env/
 logs/*.log
 !logs/.gitkeep
 
+# Atomic temporary state files
+data/*.tmp
+
 # IDE / Editor configuration
 .vscode/
 .idea/
