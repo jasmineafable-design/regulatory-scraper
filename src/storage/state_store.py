@@ -1,17 +1,19 @@
-# File: src/storage/state_store.py
+# Location: src/storage/state_store.py
 
 import json
 import os
 import logging
+from typing import Set
 
-logger = logging.getLogger("StateManager")
+logger = logging.getLogger("StateStore")
 
-class StateManager:
-    def __init__(self, storage_filepath: str = "data/processed_state.json"):
-        self.storage_filepath = storage_filepath
-        self.seen_ids = self._load_state()
+class StateStore:
+    def __init__(self, state_file_path: str = "data/processed_state.json", storage_filepath: str = None):
+        # Support both state_file_path and storage_filepath keyword arguments
+        self.storage_filepath = storage_filepath or state_file_path
+        self.seen_ids: Set[str] = self._load_state()
 
-    def _load_state(self) -> set:
+    def _load_state(self) -> Set[str]:
         if not os.path.exists(self.storage_filepath):
             return set()
         try:
@@ -41,5 +43,5 @@ class StateManager:
         self.seen_ids.add(composite_key)
         self._save_state()
 
-# Backward compatibility alias for tests and pipeline modules expecting StateStore
-StateStore = StateManager
+# Backward compatibility alias
+StateManager = StateStore
