@@ -23,17 +23,18 @@ class NotificationDispatcher:
         if not self.webhook_url:
             logger.warning("No webhook URL configured. Logging discoveries locally only.")
             for item in discoveries:
-                logger.info(f"[DISPATCH ALERT] {item.regulator_id} | {item.issuance_identifier} | {item.title}")
+                logger.info(f"[DISPATCH ALERT] {item.source_regulator} | {item.issuance_identifier} | {item.issuance_title}")
             return True
 
         payload = {
             "summary": f"🚨 Regulatory Intelligence Alert: {len(discoveries)} New Issuance(s) Discovered",
             "issuances": [
                 {
-                    "regulator": item.regulator_id,
+                    "regulator": item.source_regulator,
+                    "category": item.source_category,
                     "identifier": item.issuance_identifier,
-                    "title": item.title,
-                    "document_url": item.document_url,
+                    "title": item.issuance_title,
+                    "document_url": item.source_url,
                 }
                 for item in discoveries
             ],
