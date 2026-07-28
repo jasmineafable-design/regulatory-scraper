@@ -1,45 +1,62 @@
 import logging
-from typing import List, Dict, Any
+from datetime import datetime
 import requests
 from bs4 import BeautifulSoup
-from src.adapters.base import BaseAdapter
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("sec_adapter")
 
-class SECAdapter(BaseAdapter):
-    """
-    Adapter for scraping Securities and Exchange Commission (SEC) issuances.
-    """
+class CandidateIssuance:
+    def __init__(self, source_regulator: str, issuance_identifier: str, title: str, link: str, date_posted: str = ""):
+        self.source_regulator = source_regulator
+        self.issuance_identifier = issuance_identifier
+        self.title = title
+        self.link = link
+        self.date_posted = date_posted
 
-    BASE_URL = "https://www.sec.gov.ph"
-
-    def __init__(self, config: Dict[str, Any] = None):
-        self.config = config or {}
+class SECAdapter:
+    def __init__(self):
+        self.source_regulator = "SEC"
+        self.base_url = "https://www.sec.gov.ph"
         self.headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+            "User-Agent": (
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) "
+                "Chrome/124.0.0.0 Safari/537.36"
+            ),
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
+            "Accept-Language": "en-US,en;q=0.9",
+            "Referer": "https://www.sec.gov.ph/",
         }
 
-    def fetch(self) -> List[Dict[str, Any]]:
-        """
-        Fetches latest memorandum circulars and opinions from SEC.
-        """
-        items: List[Dict[str, Any]] = []
+    def fetch_latest_issuances(self):
+        current_year = datetime.now().year
+        url = f"{self.base_url}/mc-{current_year}/"
+        logger.info(f"Fetching SEC issuances from {url}...")
+        
+        candidates = []
         try:
-            response = requests.get(f"{self.BASE_URL}/mc-2026/", headers=self.headers, timeout=15)
-            if response.status_code == 200:
-                soup = BeautifulSoup(response.text, "html.parser")
-                for row in soup.find_all("tr"):
-                    cols = row.find_all("td")
-                    if len(cols) >= 2:
-                        link = row.find("a")
-                        items.append({
-                            "title": cols[0].get_text(strip=True),
-                            "url": link.get("href") if link else "",
-                            "regulator": "SEC",
-                            "raw_payload": str(row)
-                        })
+            response = requests.get(url, headers=self.headers, timeout=15)
+            response.raise_for_status()
+            
+            soup = BeautifulSoup(response.text, "html.parser")
+            # Parse PDF or memorandum links from the directory table/list
+            for anchor in soup.find_all("a", href=True):
+                href = anchor["href"]
+                text = anchor.get_text(strip=True)
+                if href.endswith(".pdf") or "MC-NO" in text.upper() or "MEMORANDUM" in text.upper():
+                    identifier = text if text else href.split("/")[-1]
+                    candidates.append(
+                        CandidateIssuance(
+                            source_regulator=self.source_regulator,
+                            issuance_identifier=identifier,
+                            title=text or identifier,
+                            link=href if href.startswith("http") else f"{self.base_url}{href}"
+                        )
+                    )
+            logger.info(f"Successfully extracted {len(candidates)} candidates from SEC.")
+        except requests.exceptions.HTTPError as e:
+            logger.error(f"Failed to fetch SEC issuances: {e}")
         except Exception as e:
-            logger.error(f"SECAdapter fetch failed: {str(e)}")
-            raise e
+            logger.error(f"Unexpected error in SEC adapter: {e}")
 
-        return items
+        return candidates
