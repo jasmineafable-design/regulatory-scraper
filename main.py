@@ -1,55 +1,43 @@
-import argparse
+# File: main.py
+
 import logging
-import os
 import sys
 
-from core.storage.state_manager import StateManager
-from core.adapters.sec_adapter import SECAdapter
-# Import your other adapters here if needed
-# from core.adapters.bir_adapter import BIRAdapter
-# from core.adapters.ic_adapter import ICAdapter
+# Change from core.storage.state_manager to src.storage.state_store
+from src.storage.state_store import StateManager  # or StateStore
+from src.pipeline.orchestrator import RegulatoryPipeline
+from src.adapters.sec import SECAdapter
+# Import any other adapters or modules here (e.g., BIR, IC, Notifier)
 
+# Set up logging
 logging.basicConfig(
     level=logging.INFO,
-    format="[%(asctime)s] [%(levelname)s] [%(name)s]: %(message)s",
-    datefmt="%Y-%m-%d %H:%M:%S",
-    handlers=[logging.StreamHandler(sys.stdout)]
+    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s"
 )
 logger = logging.getLogger("main")
 
+
 def main():
-    parser = argparse.ArgumentParser(description="Regulatory Intelligence Automated Scraper")
-    parser.add_argument("--morning-check", action="store_true", help="Flag indicating morning check run for daily summary")
-    args = parser.parse_args()
-
-    logger.info(f"Starting Regulatory Intelligence cycle (Opening Run: {args.morning_check})...")
-
-    state_manager = StateManager()
+    logger.info("Initializing Regulatory Scraper Pipeline...")
     
-    # Initialize active adapters
-    adapters = [SECAdapter()]
+    # Initialize State Store
+    state_store = StateManager(state_file_path="data/processed_state.json")
+    
+    # Initialize Adapters
+    adapters = [
+        SECAdapter(),
+        # Add BIRAdapter(), ICAdapter(), etc.
+    ]
+    
+    # Initialize Pipeline
+    pipeline = RegulatoryPipeline(adapters=adapters, state_store=state_store)
+    
+    # Run execution loop
+    logger.info("Starting pipeline execution run...")
+    results = pipeline.run(is_morning_check=False)
+    
+    logger.info(f"Pipeline completed successfully. Processed results: {results}")
 
-    new_issuances = []
-
-    for adapter in adapters:
-        regulator_name = getattr(adapter, "source_regulator", adapter.__class__.__name__)
-        logger.info(f"Executing adapter for {regulator_name}...")
-        try:
-            candidates = adapter.fetch_latest_issuances()
-            for candidate in candidates:
-                if not state_manager.is_seen(candidate.source_regulator, candidate.issuance_identifier):
-                    new_issuances.append(candidate)
-                    state_manager.mark_seen(candidate.source_regulator, candidate.issuance_identifier)
-        except Exception as e:
-            logger.error(f"Adapter execution failed for {regulator_name}: {e}", exc_info=True)
-
-    if new_issuances:
-        logger.info(f"Discovered {len(new_issuances)} new issuance(s)!")
-        # Trigger notification logic here once notifier is wired
-    else:
-        logger.info("Polling run complete. No new issuances discovered. Remaining silent.")
-
-    logger.info("Cycle complete.")
 
 if __name__ == "__main__":
     main()
