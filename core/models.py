@@ -35,6 +35,7 @@ class RawIssuance(BaseModel):
     title: Optional[str] = None
     canonical_url: Optional[str] = None
     raw_identifier: Optional[str] = None
+    published_date_str: Optional[str] = None
     extracted_text: Optional[str] = None
     raw_content: Dict[str, Any] = Field(default_factory=dict)
     fetched_at: Optional[str] = None
@@ -81,12 +82,25 @@ class NormalizedIssuance(BaseModel):
 
 
 class IssuanceStateRecord(BaseModel):
-    issuance_identifier: str
-    source_regulator: str
+    issuance_identifier: Optional[str] = Field(default=None, alias="issuance_id")
+    source_regulator: Optional[str] = Field(default="UNKNOWN", alias="regulator_id")
+    issuance_id: Optional[str] = None
+    regulator_id: Optional[str] = None
+    category_id: Optional[str] = None
+    title: Optional[str] = None
+    canonical_url: Optional[str] = None
+    processed_status: Optional[str] = None
     first_seen_timestamp: Optional[str] = None
     last_processed_timestamp: Optional[str] = None
     status: str = "PROCESSED"
     raw_payload: Dict[str, Any] = Field(default_factory=dict)
+
+    def __init__(self, **data: Any):
+        if "issuance_id" in data and "issuance_identifier" not in data:
+            data["issuance_identifier"] = data["issuance_id"]
+        if "regulator_id" in data and "source_regulator" not in data:
+            data["source_regulator"] = data["regulator_id"]
+        super().__init__(**data)
 
 
 class BriefingRecord(BaseModel):
