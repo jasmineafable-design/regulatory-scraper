@@ -6,10 +6,11 @@ from core.notifier import NotificationDispatcher
 def test_notifier_no_webhook_fallback():
     dispatcher = NotificationDispatcher(webhook_url=None)
     sample_candidate = CandidateIssuance(
-        regulator_id="BIR",
+        source_regulator="BIR",
+        source_category="RMC",
         issuance_identifier="BIR-RMC-No-1-2026",
-        title="Sample BIR Issuance",
-        document_url="https://example.com/doc.pdf",
+        issuance_title="Sample BIR Issuance",
+        source_url="https://example.com/doc.pdf",
     )
     assert dispatcher.dispatch([sample_candidate]) is True
 
@@ -25,9 +26,10 @@ def test_notifier_webhook_success(monkeypatch):
 
     dispatcher = NotificationDispatcher(webhook_url="https://hooks.slack.com/services/test")
     sample_candidate = CandidateIssuance(
-        regulator_id="SEC",
+        source_regulator="SEC",
+        source_category="MC",
         issuance_identifier="SEC-MC-No-1-2026",
-        title="Sample SEC Issuance",
-        document_url="https://example.com/sec.pdf",
+        issuance_title="Sample SEC Issuance",
+        source_url="https://example.com/sec.pdf",
     )
     assert dispatcher.dispatch([sample_candidate]) is True
