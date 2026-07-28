@@ -12,10 +12,11 @@ def test_notifier_no_webhook_fallback():
         issuance_title="Sample BIR Issuance",
         source_url="https://example.com/doc.pdf",
     )
-    assert dispatcher.dispatch([sample_candidate]) is True
+    assert dispatcher.dispatch_alert([sample_candidate]) is True
+    assert dispatcher.dispatch_daily_report() is True
 
 
-def test_notifier_webhook_success(monkeypatch):
+def test_notifier_webhook_alert_success(monkeypatch):
     class MockResponse:
         status_code = 200
 
@@ -32,4 +33,17 @@ def test_notifier_webhook_success(monkeypatch):
         issuance_title="Sample SEC Issuance",
         source_url="https://example.com/sec.pdf",
     )
-    assert dispatcher.dispatch([sample_candidate]) is True
+    assert dispatcher.dispatch_alert([sample_candidate]) is True
+
+
+def test_notifier_webhook_daily_report_success(monkeypatch):
+    class MockResponse:
+        status_code = 200
+
+        def raise_for_status(self):
+            pass
+
+    monkeypatch.setattr(requests, "post", lambda *args, **kwargs: MockResponse())
+
+    dispatcher = NotificationDispatcher(webhook_url="https://hooks.slack.com/services/test")
+    assert dispatcher.dispatch_daily_report(status="ALL_CLEAR", count=0) is True
