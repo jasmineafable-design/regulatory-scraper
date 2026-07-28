@@ -1,4 +1,42 @@
-def fetch_latest_issuances(self):
+import logging
+from datetime import datetime
+import requests
+from bs4 import BeautifulSoup
+
+logger = logging.getLogger("sec_adapter")
+
+
+class CandidateIssuance:
+    def __init__(self, source_regulator: str, issuance_identifier: str, title: str, link: str, date_posted: str = ""):
+        self.source_regulator = source_regulator
+        self.issuance_identifier = issuance_identifier
+        self.title = title
+        self.link = link
+        self.date_posted = date_posted
+
+
+class SECAdapter:
+    BASE_URL = "https://www.sec.gov.ph"
+
+    def __init__(self):
+        self.source_regulator = "SEC"
+        self.base_url = self.BASE_URL
+        self.headers = {
+            "User-Agent": (
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) "
+                "Chrome/124.0.0.0 Safari/537.36"
+            ),
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
+            "Accept-Language": "en-US,en;q=0.9",
+            "Referer": "https://www.sec.gov.ph/",
+        }
+
+    def fetch(self):
+        """Standard adapter interface alias expected by unit tests."""
+        return self.fetch_latest_issuances()
+
+    def fetch_latest_issuances(self):
         current_year = datetime.now().year
         url = f"{self.base_url}/mc-{current_year}/"
         logger.info(f"Fetching SEC issuances from {url}...")
