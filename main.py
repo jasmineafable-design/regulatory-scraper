@@ -29,12 +29,8 @@ def main():
     args = parse_args()
     logger.info(f"Starting Regulatory Intelligence cycle (Opening Run: {args.is_opening_run})...")
 
-    # Ensure state directory exists before initializing StateManager
-    state_dir = os.path.dirname(settings.STATE_FILE_PATH)
-    if state_dir and not os.path.exists(state_dir):
-        os.makedirs(state_dir, exist_ok=True)
-
-    state_manager = StateManager(db_path=settings.STATE_FILE_PATH)
+    # Initialize state manager with explicit filepath from settings
+    state_manager = StateManager(filepath=settings.STATE_FILE_PATH)
     dispatcher = NotificationDispatcher(webhook_url=settings.SLACK_WEBHOOK_URL)
 
     adapters = [
