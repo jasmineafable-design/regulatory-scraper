@@ -1,49 +1,44 @@
-import requests
-from core.models import CandidateIssuance
-from core.notifier import NotificationDispatcher
+# File: tests/test_notifier.py
+
+import pytest
+from unittest.mock import patch, MagicMock
+from src.notifier.email_notifier import EmailNotifier
 
 
-def test_notifier_no_webhook_fallback():
-    dispatcher = NotificationDispatcher(webhook_url=None)
-    sample_candidate = CandidateIssuance(
-        source_regulator="BIR",
-        source_category="RMC",
-        issuance_identifier="BIR-RMC-No-1-2026",
-        issuance_title="Sample BIR Issuance",
-        source_url="https://example.com/doc.pdf",
-    )
-    assert dispatcher.dispatch_alert([sample_candidate]) is True
-    assert dispatcher.dispatch_daily_report() is True
+def test_email_notifier_empty_items():
+    notifier = EmailNotifier()
+    # Sending no items should return True without attempting to send email
+    assert notifier.send_alert([]) is True
 
 
-def test_notifier_webhook_alert_success(monkeypatch):
-    class MockResponse:
-        status_code = 200
-
-        def raise_for_status(self):
-            pass
-
-    monkeypatch.setattr(requests, "post", lambda *args, **kwargs: MockResponse())
-
-    dispatcher = NotificationDispatcher(webhook_url="https://hooks.slack.com/services/test")
-    sample_candidate = CandidateIssuance(
-        source_regulator="SEC",
-        source_category="MC",
-        issuance_identifier="SEC-MC-No-1-2026",
-        issuance_title="Sample SEC Issuance",
-        source_url="https://example.com/sec.pdf",
-    )
-    assert dispatcher.dispatch_alert([sample_candidate]) is True
+@patch.dict("os.environ", {}, clear=True)
+def test_email_notifier_missing_credentials_fails_loud():
+    notifier = EmailNotifier()
+    sample_items = [{"title": "SEC MC 1", "url": "http://sec.gov.ph/1", "regulator": "SEC"}]
+    
+    # Expect ValueError when SMTP parameters are missing
+    with pytest.raises(ValueError, match="EmailNotifier configuration missing"):
+        notifier.send_alert(sample_items)
 
 
-def test_notifier_webhook_daily_report_success(monkeypatch):
-    class MockResponse:
-        status_code = 200
+@patch.dict("os.environ", {
+    "SMTP_SERVER": "smtp.example.com",
+    "SMTP_PORT": "587",
+    "SMTP_SENDER_EMAIL": "bot@example.com",
+    "SMTP_SENDER_PASSWORD": "secretpassword",
+    "NOTIFICATION_RECIPIENTS": "alert1@example.com, alert2@example.com"
+})
+@patch("smtplib.SMTP")
+def test_email_notifier_success(mock_smtp):
+    mock_server_instance = MagicMock()
+    mock_smtp.return_value.__enter__.return_value = mock_server_instance
 
-        def raise_for_status(self):
-            pass
+    notifier = EmailNotifier()
+    sample_items = [{"title": "SEC MC 10-2026", "url": "http://sec.gov.ph/mc10", "regulator": "SEC"}]
 
-    monkeypatch.setattr(requests, "post", lambda *args, **kwargs: MockResponse())
+    result = notifier.send_alert(sample_items)
 
-    dispatcher = NotificationDispatcher(webhook_url="https://hooks.slack.com/services/test")
-    assert dispatcher.dispatch_daily_report(status="ALL_CLEAR", count=0) is True
+    assert result is True
+    mock_server_instance.starttls.assert_called_once()
+    mock_server_instance.login.assert_called_once_with("bot@example.com", "secretpassword")
+    mock_server_instance.sendmail.assert_called_once()
