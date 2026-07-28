@@ -1,14 +1,18 @@
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 
 @dataclass
 class Settings:
-    """System-wide configuration settings loaded from environment variables."""
+    """Central configuration settings for the regulatory scraper system."""
 
-    STATE_FILE_PATH: str = os.getenv("STATE_FILE_PATH", "state/seen_issuances.json")
-    SLACK_WEBHOOK_URL: str | None = os.getenv("SLACK_WEBHOOK_URL")
+    STATE_FILE_PATH: str = field(
+        default_factory=lambda: os.getenv("STATE_FILE_PATH", "state/seen_issuances.json")
+    )
+    SLACK_WEBHOOK_URL: str | None = field(
+        default_factory=lambda: os.getenv("SLACK_WEBHOOK_URL")
+    )
 
 
-# Global configuration instance exported for application use
+# Exported global instance
 settings = Settings()
