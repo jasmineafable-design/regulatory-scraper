@@ -1,3 +1,5 @@
+# Location: src/adapters/sec.py (or core/adapters/sec_adapter.py)
+
 import logging
 from datetime import datetime
 import requests
@@ -14,9 +16,11 @@ class CandidateIssuance:
         self.date_posted = date_posted
 
 class SECAdapter:
+    BASE_URL = "https://www.sec.gov.ph"  # Match test requirement
+
     def __init__(self):
         self.source_regulator = "SEC"
-        self.base_url = "https://www.sec.gov.ph"
+        self.base_url = self.BASE_URL
         self.headers = {
             "User-Agent": (
                 "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
@@ -27,6 +31,10 @@ class SECAdapter:
             "Accept-Language": "en-US,en;q=0.9",
             "Referer": "https://www.sec.gov.ph/",
         }
+
+    def fetch(self):
+        """Standard adapter interface alias expected by unit tests."""
+        return self.fetch_latest_issuances()
 
     def fetch_latest_issuances(self):
         current_year = datetime.now().year
@@ -39,7 +47,6 @@ class SECAdapter:
             response.raise_for_status()
             
             soup = BeautifulSoup(response.text, "html.parser")
-            # Parse PDF or memorandum links from the directory table/list
             for anchor in soup.find_all("a", href=True):
                 href = anchor["href"]
                 text = anchor.get_text(strip=True)
