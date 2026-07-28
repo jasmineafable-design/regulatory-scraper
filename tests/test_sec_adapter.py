@@ -8,9 +8,9 @@ def test_sec_adapter_initialization():
     assert adapter.regulator_id == "SEC"
 
 
-def test_sec_adapter_fetch_mocked(mocker):
+def test_sec_adapter_fetch_mocked(monkeypatch):
     adapter = SECAdapter()
-    
+
     mock_html = """
     <html>
         <body>
@@ -18,9 +18,16 @@ def test_sec_adapter_fetch_mocked(mocker):
         </body>
     </html>
     """
-    
-    mocker.patch("requests.get", return_value=mocker.Mock(status_code=200, text=mock_html))
-    
+
+    class MockResponse:
+        status_code = 200
+        text = mock_html
+
+        def raise_for_status(self):
+            pass
+
+    monkeypatch.setattr("requests.get", lambda *args, **kwargs: MockResponse())
+
     results = adapter.fetch_latest_issuances()
     assert len(results) == 1
     assert isinstance(results[0], CandidateIssuance)
