@@ -1,3 +1,5 @@
+# File: src/storage/state_store.py
+
 import json
 import os
 import logging
@@ -38,3 +40,6 @@ class StateManager:
         composite_key = f"{regulator.strip().upper()}:{identifier.strip()}"
         self.seen_ids.add(composite_key)
         self._save_state()
+
+# Backward compatibility alias for tests and pipeline modules expecting StateStore
+StateStore = StateManager
