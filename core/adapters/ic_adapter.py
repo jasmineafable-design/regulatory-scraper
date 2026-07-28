@@ -2,7 +2,7 @@ import re
 import logging
 from typing import List
 from core.adapters.base_adapter import BaseAdapter
-from core.models import CandidateIssuance, RawIssuance
+from core.models import CandidateIssuance, RawIssuance, NormalizedIssuance, ContentQuality
 
 logger = logging.getLogger(__name__)
 
@@ -22,7 +22,9 @@ class ICAdapter(BaseAdapter):
         """
         match = re.search(r'((?:CL|MC|ADV)\s*(?:No\.?)?\s*\d+[-–]\d+)', title, re.IGNORECASE)
         if match:
-            return match.group(1).upper()
+            raw_match = match.group(1)
+            prefix = raw_match.split()[0].upper()
+            return re.sub(r'(?i)(?:cl|mc|adv)\s*(?:no\.?)?\s*', f'{prefix} No. ', raw_match)
         match_gen = re.search(r'(\d+[-–]\d+)', title)
         if match_gen:
             return f"{category} No. {match_gen.group(1)}"
@@ -31,23 +33,48 @@ class ICAdapter(BaseAdapter):
     def parse_html_page(self, html_content: str, base_url: str, category: str = "CL") -> List[RawIssuance]:
         """
         Parses raw HTML content into list of RawIssuance models.
+        Filters specifically for table rows representing individual issuances.
         """
         raw_list = []
-        lines = [line.strip() for line in html_content.split('\n') if line.strip()]
-        for idx, line in enumerate(lines):
-            if "CL" in line or "Circular Letter" in line or "Advisory" in line or "No." in line:
-                identifier = self._extract_identifier(line, category)
-                raw_list.append(
-                    RawIssuance(
-                        regulator_id=self.regulator_id,
-                        category_id=category,
-                        title=line,
-                        canonical_url=f"{base_url}#doc-{idx}",
-                        raw_identifier=identifier,
-                        extracted_text=line
-                    )
+        rows = re.findall(r'<tr>(.*?)</tr>', html_content, re.DOTALL | re.IGNORECASE)
+        for idx, row in enumerate(rows):
+            if '<th>' in row.lower():
+                continue
+            
+            clean_row_text = re.sub(r'<[^>]+>', ' ', row).strip()
+            clean_row_text = ' '.join(clean_row_text.split())
+            
+            # Filter rows that actually contain document references
+            if not any(k in clean_row_text.lower() for k in ['cl', 'circular', 'advisory', 'mc', 'no.']):
+                continue
+
+            identifier = self._extract_identifier(clean_row_text, category)
+            raw_list.append(
+                RawIssuance(
+                    regulator_id=self.regulator_id,
+                    category_id=category,
+                    title=clean_row_text,
+                    canonical_url=f"{base_url}#doc-{idx}",
+                    raw_identifier=identifier,
+                    extracted_text=clean_row_text
                 )
+            )
         return raw_list
+
+    def normalize(self, raw: RawIssuance) -> NormalizedIssuance:
+        """
+        Converts a RawIssuance into a NormalizedIssuance model.
+        """
+        issuance_id = raw.raw_identifier or self._extract_identifier(raw.title or "", raw.category_id or "CL")
+        quality = ContentQuality.HIGH if raw.extracted_text and len(raw.extracted_text) > 10 else ContentQuality.LOW
+        return NormalizedIssuance(
+            regulator_id=self.regulator_id,
+            category_id=raw.category_id or "CL",
+            issuance_id=issuance_id,
+            title=raw.title or "Untitled IC Issuance",
+            canonical_url=raw.canonical_url or "",
+            content_quality=quality
+        )
 
     def fetch_latest_issuances(self) -> List[CandidateIssuance]:
         """
