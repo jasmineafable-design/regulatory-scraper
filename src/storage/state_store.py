@@ -1,45 +1,40 @@
 import json
 import os
 import logging
-from typing import Set
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("StateManager")
 
-class StateStore:
-    """
-    Manages historical state to identify new vs. previously processed issuances.
-    """
+class StateManager:
+    def __init__(self, storage_filepath: str = "data/processed_state.json"):
+        self.storage_filepath = storage_filepath
+        self.seen_ids = self._load_state()
 
-    def __init__(self, state_file_path: str = "data/processed_state.json"):
-        self.state_file_path = state_file_path
-        self._ensure_directory()
-        self.processed_ids: Set[str] = self._load_state()
-
-    def _ensure_directory(self):
-        os.makedirs(os.path.dirname(self.state_file_path), exist_ok=True)
-
-    def _load_state(self) -> Set[str]:
-        if not os.path.exists(self.state_file_path):
+    def _load_state(self) -> set:
+        if not os.path.exists(self.storage_filepath):
             return set()
         try:
-            with open(self.state_file_path, "r", encoding="utf-8") as f:
+            with open(self.storage_filepath, "r", encoding="utf-8") as f:
                 data = json.load(f)
-                return set(data.get("processed_ids", []))
+                return set(data.get("seen_ids", []))
         except Exception as e:
-            logger.error(f"Error loading state store: {str(e)}")
+            logger.error(f"Error loading state file: {e}")
             return set()
 
-    def is_processed(self, item_id: str) -> bool:
-        return item_id in self.processed_ids
-
-    def commit(self, item_id: str) -> None:
-        """
-        Adds a new issuance ID to state and persists to disk.
-        """
-        self.processed_ids.add(item_id)
+    def _save_state(self) -> None:
+        os.makedirs(os.path.dirname(self.storage_filepath), exist_ok=True)
         try:
-            with open(self.state_file_path, "w", encoding="utf-8") as f:
-                json.dump({"processed_ids": list(self.processed_ids)}, f, indent=2)
+            with open(self.storage_filepath, "w", encoding="utf-8") as f:
+                json.dump({"seen_ids": list(self.seen_ids)}, f, indent=2)
         except Exception as e:
-            logger.error(f"Failed to commit state for {item_id}: {str(e)}")
-            raise e
+            logger.error(f"Error saving state file: {e}")
+
+    def is_seen(self, regulator: str, identifier: str) -> bool:
+        """Checks if a regulator-issuance pair has already been processed."""
+        composite_key = f"{regulator.strip().upper()}:{identifier.strip()}"
+        return composite_key in self.seen_ids
+
+    def mark_seen(self, regulator: str, identifier: str) -> None:
+        """Marks an issuance as seen and persists to local JSON state."""
+        composite_key = f"{regulator.strip().upper()}:{identifier.strip()}"
+        self.seen_ids.add(composite_key)
+        self._save_state()
