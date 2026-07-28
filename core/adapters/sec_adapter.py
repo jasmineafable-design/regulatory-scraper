@@ -1,54 +1,57 @@
-import logging
 from typing import List
-from core.adapters.base_adapter import BaseAdapter
-from core.models import CandidateIssuance
+import requests
+from bs4 import BeautifulSoup
 
-logger = logging.getLogger(__name__)
+from core.adapters.base import BaseAdapter
+from core.models import CandidateIssuance
+from core.logger import setup_logger
+
+logger = setup_logger("sec_adapter")
 
 
 class SECAdapter(BaseAdapter):
-    """
-    Adapter for fetching and standardizing regulatory issuances from the Securities and Exchange Commission (SEC).
-    """
+    """Adapter for retrieving issuances from the Securities and Exchange Commission (SEC)."""
 
-    @property
-    def regulator_id(self) -> str:
-        return "SEC"
+    regulator_id: str = "SEC"
+    default_target_url: str = "https://www.sec.gov.ph/mc-2026/"  # Target endpoint for SEC MCs
 
     def fetch_latest_issuances(self) -> List[CandidateIssuance]:
-        """
-        Fetches the latest issuances from SEC and maps them to CandidateIssuance models.
-        """
-        logger.info(f"[{self.regulator_id}] Fetching latest issuances...")
+        """Fetches and normalizes SEC Memorandum Circulars into standard CandidateIssuance models."""
+        logger.info(f"Fetching SEC issuances from {self.default_target_url}...")
+        
         candidates: List[CandidateIssuance] = []
-
+        
         try:
-            # Structured extraction pattern for SEC memorandum circulars
-            extracted_records = [
-                {
-                    "identifier": "SEC-MC-2026-03",
-                    "category": "Memorandum Circular",
-                    "title": "Updated Framework on Corporate Governance and Cybersecurity Risk Disclosure",
-                    "url": "https://www.sec.gov.ph/mc-2026/mc-no-03-s-2026.pdf",
-                    "raw_payload": {"source_table": "SEC Memorandum Circulars 2026"}
-                }
-            ]
+            headers = {
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+            }
+            response = requests.get(self.default_target_url, headers=headers, timeout=15)
+            response.raise_for_status()
 
-            for record in extracted_records:
-                candidate = CandidateIssuance(
-                    source_regulator=self.regulator_id,
-                    source_category=record["category"],
-                    issuance_identifier=record["identifier"],
-                    issuance_title=record["title"],
-                    source_url=record["url"],
-                    raw_payload=record["raw_payload"],
-                    validation_status="genuine"
-                )
-                candidates.append(candidate)
+            soup = BeautifulSoup(response.text, "html.parser")
+            
+            # Extract links/rows according to SEC listing structure
+            # (Matches standard table or anchor lists on SEC site)
+            for anchor in soup.find_all("a", href=True):
+                text = anchor.get_text(strip=True)
+                href = anchor["href"]
+
+                # Filter for circular / opinion patterns
+                if "SEC MC" in text or "Memorandum Circular No." in text:
+                    # Clean identifier extraction (e.g., SEC-MC-No-1-2026)
+                    cleaned_id = text.split(":")[0].strip().replace(" ", "-") if ":" in text else text.replace(" ", "-")
+                    
+                    candidate = CandidateIssuance(
+                        regulator_id=self.regulator_id,
+                        issuance_identifier=f"SEC-{cleaned_id}",
+                        title=text,
+                        document_url=href,
+                        category="MC",
+                    )
+                    candidates.append(candidate)
 
         except Exception as e:
-            logger.error(f"[{self.regulator_id}] Failed to fetch issuances: {e}")
-            raise e
+            logger.error(f"Failed to fetch SEC issuances: {e}", exc_info=True)
 
-        logger.info(f"[{self.regulator_id}] Successfully extracted {len(candidates)} candidate issuance(s).")
+        logger.info(f"Successfully extracted {len(candidates)} candidates from SEC.")
         return candidates
