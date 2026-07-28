@@ -18,45 +18,49 @@ def main() -> None:
     # 2. Initialize State Manager Memory
     state_mgr = StateManager()
 
-    # 3. Active Adapters & Categories to Execute
-    ic_adapter = ICAdapter()
-    bir_adapter = BIRAdapter()
-
+    # 3. Active Adapters to Execute
     adapters = [
-        (bir_adapter, "RMC", {"target_url": "https://www.bir.gov.ph/revenue-issuances-details"}),
-        (ic_adapter, "CL", {"target_url": "https://www.insurance.gov.ph/category/circular-letters/"}),
-        (ic_adapter, "ADV", {"target_url": "https://www.insurance.gov.ph/category/advisories/"}),
-        (ic_adapter, "MC", {"target_url": "https://www.insurance.gov.ph/category/memorandum-circulars/"}),
+        BIRAdapter(),
+        ICAdapter(),
     ]
 
     total_new_discoveries = 0
 
-    for adapter, category_id, adapter_config in adapters:
-        logger.info(f"--- Running Adapter: {adapter.regulator_id} ({category_id}) ---")
-        raw_list = adapter.fetch_latest_issuances(category_id, adapter_config)
-        logger.info(f"Fetched {len(raw_list)} raw items from {adapter.regulator_id} ({category_id})")
+    for adapter in adapters:
+        logger.info(f"--- Running Adapter: {adapter.regulator_id} ---")
+        
+        try:
+            # Standardized parameterless invocation across all adapters
+            candidates = adapter.fetch_latest_issuances()
+            logger.info(f"Fetched {len(candidates)} candidate items from {adapter.regulator_id}")
 
-        adapter_new_count = 0
-        for raw_item in raw_list:
-            normalized = adapter.normalize(raw_item)
+            adapter_new_count = 0
+            for candidate in candidates:
+                identifier = candidate.issuance_identifier
 
-            if not state_mgr.is_seen(normalized.issuance_id):
-                logger.info(f"[NEW DISCOVERY] {normalized.issuance_id} - {normalized.title[:60]}...")
-                state_mgr.record_issuance(normalized, status="PROCESSED")
-                adapter_new_count += 1
-            else:
-                logger.debug(f"[SEEN] Skipping {normalized.issuance_id}")
+                if not state_mgr.is_seen(identifier):
+                    logger.info(f"[NEW DISCOVERY] {identifier} - {candidate.title[:60]}...")
+                    
+                    # Record the candidate into the state ledger
+                    state_mgr.record_issuance(candidate, status="PROCESSED")
+                    adapter_new_count += 1
+                else:
+                    logger.debug(f"[SEEN] Skipping {identifier}")
 
-        total_new_discoveries += adapter_new_count
-        logger.info(f"Completed {adapter.regulator_id} ({category_id}): {adapter_new_count} new discoveries.")
+            total_new_discoveries += adapter_new_count
+            logger.info(f"Completed {adapter.regulator_id}: {adapter_new_count} new discoveries.")
 
+        except Exception as e:
+            logger.error(f"Error executing adapter {adapter.regulator_id}: {e}", exc_info=True)
+
+    # 4. Commit State Persistence
     if total_new_discoveries > 0:
         state_mgr.commit()
         logger.info(f"Committed {total_new_discoveries} new issuance records to state ledger.")
     else:
         logger.info("No new unseen regulatory issuances found during this run.")
 
-    logger.info("Phase 6 IC Adapter execution completed successfully.")
+    logger.info("Regulatory Scraper System execution completed successfully.")
 
 
 if __name__ == "__main__":
