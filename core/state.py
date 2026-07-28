@@ -1,59 +1,61 @@
 import json
-import os
-from typing import Set
+import logging
+from pathlib import Path
+from typing import Any, Dict, Optional
 
-from core.logger import setup_logger
+from core.config import settings
 
-logger = setup_logger("state")
+logger = logging.getLogger(__name__)
 
 
 class StateManager:
-    """Manages persistence of seen issuance identifiers to avoid duplicate alerts."""
+    """Manages persistence of seen issuances across scraper runs."""
 
-    def __init__(self, filepath: str = "state/seen_issuances.json"):
-        self.filepath = filepath
-        self.seen_identifiers: Set[str] = set()
-        self.load_state()
+    def __init__(self, filepath: Optional[str] = None, state_file: Optional[str] = None):
+        # Support both 'filepath' and 'state_file' keyword arguments
+        resolved_path = filepath or state_file or settings.STATE_FILE_PATH
+        self.filepath = Path(resolved_path)
+        self.seen_data: Dict[str, Dict[str, Any]] = {}
+        self._load_state()
 
-    def _make_key(self, regulator: str, identifier: str) -> str:
-        """Constructs a composite state key."""
-        return f"{regulator.upper()}::{identifier.strip()}"
-
-    def is_seen(self, regulator: str, identifier: str) -> bool:
-        """Checks if an issuance has already been processed."""
-        key = self._make_key(regulator, identifier)
-        return key in self.seen_identifiers
-
-    def mark_seen(self, regulator: str, identifier: str) -> None:
-        """Marks an issuance as processed in memory."""
-        key = self._make_key(regulator, identifier)
-        self.seen_identifiers.add(key)
-
-    def load_state(self) -> None:
-        """Loads state from JSON file on disk if it exists."""
-        if os.path.exists(self.filepath):
+    def _load_state(self) -> None:
+        """Loads state data from the JSON file if it exists."""
+        if self.filepath.exists():
             try:
                 with open(self.filepath, "r", encoding="utf-8") as f:
-                    data = json.load(f)
-                    if isinstance(data, list):
-                        self.seen_identifiers = set(data)
-                    logger.info(f"Loaded {len(self.seen_identifiers)} seen item(s) from {self.filepath}")
+                    self.seen_data = json.load(f)
             except Exception as e:
-                logger.error(f"Failed to load state file {self.filepath}: {e}", exc_info=True)
-                self.seen_identifiers = set()
+                logger.error(f"Failed to load state file at {self.filepath}: {e}")
+                self.seen_data = {}
         else:
-            logger.info(f"No existing state file found at {self.filepath}. Starting fresh.")
-            self.seen_identifiers = set()
+            self.filepath.parent.mkdir(parents=True, exist_ok=True)
+            self.seen_data = {}
+            self._save_state()
 
-    def save_state(self) -> None:
-        """Saves current seen identifiers set to disk as JSON."""
+    def _save_state(self) -> None:
+        """Saves current state data to the JSON file."""
         try:
-            dir_name = os.path.dirname(self.filepath)
-            if dir_name:
-                os.makedirs(dir_name, exist_ok=True)
-
+            self.filepath.parent.mkdir(parents=True, exist_ok=True)
             with open(self.filepath, "w", encoding="utf-8") as f:
-                json.dump(sorted(list(self.seen_identifiers)), f, indent=2)
-            logger.info(f"Saved {len(self.seen_identifiers)} item(s) to state file {self.filepath}")
+                json.dump(self.seen_data, f, indent=2)
         except Exception as e:
-            logger.error(f"Failed to save state file {self.filepath}: {e}", exc_info=True)
+            logger.error(f"Failed to save state file at {self.filepath}: {e}")
+
+    def is_seen(self, item_id: str) -> bool:
+        """Checks if an item ID has already been recorded."""
+        return item_id in self.seen_data
+
+    def mark_seen(
+        self,
+        item_id: str,
+        agency: str,
+        title: str,
+        status: str = "PROCESSED",
+    ) -> None:
+        """Records an item as seen and persists state to disk."""
+        self.seen_data[item_id] = {
+            "agency": agency,
+            "title": title,
+            "status": status,
+        }
+        self._save_state()
