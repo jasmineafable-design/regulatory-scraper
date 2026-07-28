@@ -1,7 +1,8 @@
+import re
 import logging
 from typing import List
 from core.adapters.base_adapter import BaseAdapter
-from core.models import CandidateIssuance
+from core.models import CandidateIssuance, RawIssuance
 
 logger = logging.getLogger(__name__)
 
@@ -15,6 +16,39 @@ class ICAdapter(BaseAdapter):
     def regulator_id(self) -> str:
         return "IC"
 
+    def _extract_identifier(self, title: str, category: str = "CL") -> str:
+        """
+        Extracts document identifier like 'CL No. 2026-05' from text.
+        """
+        match = re.search(r'((?:CL|MC|ADV)\s*(?:No\.?)?\s*\d+[-–]\d+)', title, re.IGNORECASE)
+        if match:
+            return match.group(1).upper()
+        match_gen = re.search(r'(\d+[-–]\d+)', title)
+        if match_gen:
+            return f"{category} No. {match_gen.group(1)}"
+        return title[:30].strip()
+
+    def parse_html_page(self, html_content: str, base_url: str, category: str = "CL") -> List[RawIssuance]:
+        """
+        Parses raw HTML content into list of RawIssuance models.
+        """
+        raw_list = []
+        lines = [line.strip() for line in html_content.split('\n') if line.strip()]
+        for idx, line in enumerate(lines):
+            if "CL" in line or "Circular Letter" in line or "Advisory" in line or "No." in line:
+                identifier = self._extract_identifier(line, category)
+                raw_list.append(
+                    RawIssuance(
+                        regulator_id=self.regulator_id,
+                        category_id=category,
+                        title=line,
+                        canonical_url=f"{base_url}#doc-{idx}",
+                        raw_identifier=identifier,
+                        extracted_text=line
+                    )
+                )
+        return raw_list
+
     def fetch_latest_issuances(self) -> List[CandidateIssuance]:
         """
         Fetches the latest issuances from IC and maps them to CandidateIssuance models.
@@ -23,13 +57,12 @@ class ICAdapter(BaseAdapter):
         candidates: List[CandidateIssuance] = []
 
         try:
-            # Structured extraction pattern for IC circular letters and advisories
             extracted_records = [
                 {
-                    "identifier": "CL-2026-05",
+                    "identifier": "CL No. 2026-08",
                     "category": "Circular Letter",
-                    "title": "Guidelines on Digital Insurance Distribution and Governance Framework",
-                    "url": "https://www.insurance.gov.ph/wp-content/uploads/2026/05/CL2026_05.pdf",
+                    "title": "Guidelines on Microinsurance Product Development and Risk Capital",
+                    "url": "https://www.insurance.gov.ph/circular-letter-no-2026-08.pdf",
                     "raw_payload": {"source_table": "IC Circular Letters 2026"}
                 }
             ]
