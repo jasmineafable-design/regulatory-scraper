@@ -1,5 +1,6 @@
 from core.adapters.bir_adapter import BIRAdapter
 from core.adapters.ic_adapter import ICAdapter
+from core.adapters.sec_adapter import SECAdapter  # <--- Added
 from core.config import SystemConfig
 from core.logger import setup_logger
 from core.state import StateManager
@@ -11,17 +12,16 @@ def main() -> None:
     """Primary system execution entry point."""
     logger.info("Initializing Regulatory Scraper System...")
 
-    # 1. Load System Configuration
     config = SystemConfig.load()
     logger.info(f"System Environment: {config.environment}")
 
-    # 2. Initialize State Manager Memory
     state_mgr = StateManager()
 
-    # 3. Active Adapters to Execute
+    # Active Adapters Array
     adapters = [
         BIRAdapter(),
         ICAdapter(),
+        SECAdapter(),  # <--- Added
     ]
 
     total_new_discoveries = 0
@@ -30,7 +30,6 @@ def main() -> None:
         logger.info(f"--- Running Adapter: {adapter.regulator_id} ---")
         
         try:
-            # Standardized parameterless invocation across all adapters
             candidates = adapter.fetch_latest_issuances()
             logger.info(f"Fetched {len(candidates)} candidate items from {adapter.regulator_id}")
 
@@ -40,8 +39,6 @@ def main() -> None:
 
                 if not state_mgr.is_seen(identifier):
                     logger.info(f"[NEW DISCOVERY] {identifier} - {candidate.title[:60]}...")
-                    
-                    # Record the candidate into the state ledger
                     state_mgr.record_issuance(candidate, status="PROCESSED")
                     adapter_new_count += 1
                 else:
@@ -53,7 +50,6 @@ def main() -> None:
         except Exception as e:
             logger.error(f"Error executing adapter {adapter.regulator_id}: {e}", exc_info=True)
 
-    # 4. Commit State Persistence
     if total_new_discoveries > 0:
         state_mgr.commit()
         logger.info(f"Committed {total_new_discoveries} new issuance records to state ledger.")
