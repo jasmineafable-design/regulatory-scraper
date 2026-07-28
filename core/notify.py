@@ -1,53 +1,80 @@
 import logging
-from typing import Optional
-from core.models import BriefingRecord
+from typing import List, Protocol
+from models.issuance import BriefingRecord
 
 logger = logging.getLogger(__name__)
 
 
-def format_briefing_message(briefing: BriefingRecord) -> str:
-    """
-    Formats a BriefingRecord into a standardized plaintext/markdown message for delivery.
-    """
-    lines = [
-        f"🚨 **NEW REGULATORY ISSUANCE: {briefing.source_regulator}**",
-        f"**Identifier:** {briefing.issuance_identifier}",
-        f"**Category:** {briefing.source_category}",
-        f"**Title:** {briefing.issuance_title}",
-        f"**Official Link:** {briefing.official_source_link}",
-        f"**Completeness:** {briefing.completeness_status.upper()}",
-    ]
+class NotificationChannel(Protocol):
+    """Abstract protocol for sending notifications."""
 
-    if briefing.executive_summary:
-        lines.append(f"\n**Summary:**\n{briefing.executive_summary}")
-    
-    if briefing.risk_priority_level:
-        lines.append(f"**Risk Priority:** {briefing.risk_priority_level}")
-        
-    if briefing.suggested_action:
-        lines.append(f"**Suggested Action:** {briefing.suggested_action}")
+    def send_regulatory_briefing(self, briefing: BriefingRecord) -> bool:
+        ...
 
-    return "\n".join(lines)
+    def send_daily_monitoring_report(self, run_time_info: str) -> bool:
+        ...
 
 
-def send_notification(briefing: BriefingRecord) -> bool:
-    """
-    Dispatches a briefing notification.
-    
-    Returns True if delivery succeeded, or False if delivery failed.
-    State commit MUST only proceed if this returns True.
-    """
-    message = format_briefing_message(briefing)
-    
-    try:
-        # Stub / local console output for deterministic testing during Phase 1
-        print("=" * 60)
-        print("[NOTIFY DISPATCH]")
-        print(message)
-        print("=" * 60)
-        
-        # Real adapter calls (e.g., Telegram / Email / Google Sheets) hook in here
+class ConsoleNotificationChannel:
+    """Mock/Fallback console channel for testing and standard output."""
+
+    def send_regulatory_briefing(self, briefing: BriefingRecord) -> bool:
+        print(f"\n--- [REGULATORY BRIEFING] ---")
+        print(f"Agency: {briefing.source_regulator} ({briefing.source_category})")
+        print(f"ID: {briefing.issuance_identifier}")
+        print(f"Title: {briefing.issuance_title}")
+        print(f"Official Link: {briefing.official_source_link}")
+        print(f"Executive Summary: {briefing.executive_summary}")
+        print(f"Completeness: {briefing.completeness_status}")
+        print("-----------------------------\n")
         return True
-    except Exception as e:
-        logger.error(f"Failed to send notification for {briefing.issuance_identifier}: {e}")
-        return False
+
+    def send_daily_monitoring_report(self, run_time_info: str) -> bool:
+        print(f"\n--- [DAILY MONITORING REPORT] ---")
+        print(f"Status: No new issuances detected during opening check.")
+        print(f"Details: {run_time_info}")
+        print("---------------------------------\n")
+        return True
+
+
+class NotificationDispatcher:
+    """Implements §3.7 notification branching rules."""
+
+    def __init__(self, channel: NotificationChannel):
+        self.channel = channel
+
+    def dispatch(
+        self,
+        briefings: List[BriefingRecord],
+        is_opening_check: bool,
+        check_timestamp_info: str = "Standard Execution",
+    ) -> List[BriefingRecord]:
+        """Applies §3.7 branching rules:
+        
+        - Any check finds items -> Send Regulatory Briefing for each item.
+        - Opening check finds 0 items -> Send Daily Monitoring Report.
+        - Recurring check finds 0 items -> Send nothing.
+        
+        Returns the list of BriefingRecords that were successfully notified.
+        """
+        successful_briefings: List[BriefingRecord] = []
+
+        if briefings:
+            # Send Regulatory Briefing for each new issuance
+            for briefing in briefings:
+                success = self.channel.send_regulatory_briefing(briefing)
+                if success:
+                    successful_briefings.append(briefing)
+                else:
+                    logger.error(
+                        f"Failed to dispatch briefing for {briefing.issuance_identifier}"
+                    )
+        else:
+            # 0 new issuances found
+            if is_opening_check:
+                logger.info("Opening check found 0 new items. Sending Daily Monitoring Report.")
+                self.channel.send_daily_monitoring_report(check_timestamp_info)
+            else:
+                logger.info("Recurring check found 0 new items. No notification sent.")
+
+        return successful_briefings
