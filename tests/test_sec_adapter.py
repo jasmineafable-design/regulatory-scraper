@@ -31,5 +31,5 @@ def test_sec_adapter_fetch_mocked(monkeypatch):
     results = adapter.fetch_latest_issuances()
     assert len(results) == 1
     assert isinstance(results[0], CandidateIssuance)
-    assert results[0].regulator_id == "SEC"
+    assert results[0].source_regulator == "SEC"
     assert "SEC" in results[0].issuance_identifier
