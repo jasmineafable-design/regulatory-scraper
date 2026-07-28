@@ -19,8 +19,9 @@ class BusinessEntityConfig(BaseModel):
 class ScraperTargetConfig(BaseModel):
     regulator_id: str
     enabled: bool = True
-    base_url: str
-    adapter_class: str
+    base_url: Optional[str] = None
+    adapter_class: Optional[str] = None
+    check_interval_hours: int = 24
 
 
 class CandidateIssuance(BaseModel):
@@ -31,6 +32,15 @@ class CandidateIssuance(BaseModel):
     source_url: str
     raw_payload: Dict[str, Any] = Field(default_factory=dict)
     validation_status: str = "genuine"
+
+
+class NormalizedIssuance(BaseModel):
+    source_regulator: str
+    source_category: str
+    issuance_identifier: str
+    issuance_title: str
+    source_url: str
+    raw_payload: Dict[str, Any] = Field(default_factory=dict)
 
 
 class BriefingRecord(BaseModel):
