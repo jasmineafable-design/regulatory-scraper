@@ -1,29 +1,54 @@
-from typing import List
-from core.models import CandidateIssuance
-from state.manager import is_issuance_known
+import logging
+from typing import List, Tuple
+from models.issuance import CandidateIssuance
+from core.state import StateManager
+
+logger = logging.getLogger(__name__)
 
 
-def detect_new_issuances(candidates: List[CandidateIssuance]) -> List[CandidateIssuance]:
-    """
-    Compares candidate issuances against known state records and filters out duplicates (Section 3.6).
-    
-    Returns:
-        List[CandidateIssuance]: A list containing only new, uncommitted issuances.
-    """
-    new_candidates: List[CandidateIssuance] = []
+class Detector:
+    """Handles deterministic deduplication and baseline state handling (§3.6)."""
 
-    for candidate in candidates:
-        # Ignore items that failed validation before detection
-        if candidate.validation_status != "genuine":
-            continue
+    def __init__(self, state_manager: StateManager):
+        self.state_manager = state_manager
 
-        # Check if this item is already recorded in Issuance State
-        already_processed = is_issuance_known(
-            regulator=candidate.source_regulator,
-            identifier=candidate.issuance_identifier
-        )
+    def detect_new_issuances(
+        self,
+        candidates: List[CandidateIssuance],
+        is_category_baseline: bool = False,
+    ) -> List[CandidateIssuance]:
+        """Compares validated candidates against known state.
+        
+        If `is_category_baseline` is True, records candidates directly into state
+        without marking them as new (§13 baseline exclusion).
+        """
+        new_candidates: List[CandidateIssuance] = []
 
-        if not already_processed:
-            new_candidates.append(candidate)
+        for candidate in candidates:
+            if candidate.validation_status != "genuine":
+                logger.warning(
+                    f"Skipping candidate {candidate.issuance_identifier} due to "
+                    f"validation status: {candidate.validation_status}"
+                )
+                continue
 
-    return new_candidates
+            item_id = candidate.issuance_identifier
+
+            if self.state_manager.is_seen(item_id):
+                logger.debug(f"Issuance {item_id} already exists in state.")
+                continue
+
+            if is_category_baseline:
+                logger.info(
+                    f"Baselining category item {item_id} into state without notifying."
+                )
+                self.state_manager.mark_seen(
+                    item_id=item_id,
+                    agency=candidate.source_regulator,
+                    title=candidate.issuance_title,
+                    status="BASELINE",
+                )
+            else:
+                new_candidates.append(candidate)
+
+        return new_candidates
