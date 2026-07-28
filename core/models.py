@@ -27,6 +27,12 @@ class ScraperTargetConfig(BaseModel):
     check_interval_hours: int = 24
 
 
+class RawIssuance(BaseModel):
+    source_regulator: str
+    raw_content: Dict[str, Any] = Field(default_factory=dict)
+    fetched_at: Optional[str] = None
+
+
 class CandidateIssuance(BaseModel):
     source_regulator: str
     source_category: str
