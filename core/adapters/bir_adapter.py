@@ -2,7 +2,7 @@ import re
 import logging
 from typing import List
 from core.adapters.base_adapter import BaseAdapter
-from core.models import CandidateIssuance, RawIssuance
+from core.models import CandidateIssuance, RawIssuance, NormalizedIssuance, ContentQuality
 
 logger = logging.getLogger(__name__)
 
@@ -22,7 +22,9 @@ class BIRAdapter(BaseAdapter):
         """
         match = re.search(r'(RMC\s*(?:No\.?)?\s*\d+[-–]\d+)', title, re.IGNORECASE)
         if match:
-            return match.group(1).upper()
+            raw_match = match.group(1)
+            # Standardize casing to 'RMC No. XX-YYYY'
+            return re.sub(r'(?i)rmc\s*(?:no\.?)?\s*', 'RMC No. ', raw_match)
         match_gen = re.search(r'(\d+[-–]\d+)', title)
         if match_gen:
             return f"{category} No. {match_gen.group(1)}"
@@ -31,23 +33,45 @@ class BIRAdapter(BaseAdapter):
     def parse_html_page(self, html_content: str, base_url: str, category: str = "RMC") -> List[RawIssuance]:
         """
         Parses raw HTML content into list of RawIssuance models.
+        Filters specifically for table rows representing individual issuances.
         """
         raw_list = []
-        lines = [line.strip() for line in html_content.split('\n') if line.strip()]
-        for idx, line in enumerate(lines):
-            if "RMC" in line or "Revenue Memorandum Circular" in line or "No." in line:
-                identifier = self._extract_identifier(line, category)
-                raw_list.append(
-                    RawIssuance(
-                        regulator_id=self.regulator_id,
-                        category_id=category,
-                        title=line,
-                        canonical_url=f"{base_url}#doc-{idx}",
-                        raw_identifier=identifier,
-                        extracted_text=line
-                    )
+        rows = re.findall(r'<tr>(.*?)</tr>', html_content, re.DOTALL | re.IGNORECASE)
+        for idx, row in enumerate(rows):
+            # Skip header row or non-issuance rows
+            if '<th>' in row.lower() or 'rmc' not in row.lower():
+                continue
+            
+            clean_row_text = re.sub(r'<[^>]+>', ' ', row).strip()
+            clean_row_text = ' '.join(clean_row_text.split())
+            
+            identifier = self._extract_identifier(clean_row_text, category)
+            raw_list.append(
+                RawIssuance(
+                    regulator_id=self.regulator_id,
+                    category_id=category,
+                    title=clean_row_text,
+                    canonical_url=f"{base_url}#doc-{idx}",
+                    raw_identifier=identifier,
+                    extracted_text=clean_row_text
                 )
+            )
         return raw_list
+
+    def normalize(self, raw: RawIssuance) -> NormalizedIssuance:
+        """
+        Converts a RawIssuance into a NormalizedIssuance model.
+        """
+        issuance_id = raw.raw_identifier or self._extract_identifier(raw.title or "", raw.category_id or "RMC")
+        quality = ContentQuality.HIGH if raw.extracted_text and len(raw.extracted_text) > 10 else ContentQuality.LOW
+        return NormalizedIssuance(
+            regulator_id=self.regulator_id,
+            category_id=raw.category_id or "RMC",
+            issuance_id=issuance_id,
+            title=raw.title or "Untitled BIR Issuance",
+            canonical_url=raw.canonical_url or "",
+            content_quality=quality
+        )
 
     def fetch_latest_issuances(self) -> List[CandidateIssuance]:
         """
