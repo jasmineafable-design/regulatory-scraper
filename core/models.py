@@ -8,6 +8,7 @@ class ContentQuality(str, Enum):
     MEDIUM = "MEDIUM"
     LOW = "LOW"
     UNVERIFIED = "UNVERIFIED"
+    VALID = "VALID"
 
 
 class BusinessEntityConfig(BaseModel):
@@ -28,9 +29,20 @@ class ScraperTargetConfig(BaseModel):
 
 
 class RawIssuance(BaseModel):
-    source_regulator: str
+    source_regulator: Optional[str] = Field(default="UNKNOWN", alias="regulator_id")
+    regulator_id: Optional[str] = None
+    category_id: Optional[str] = None
+    title: Optional[str] = None
+    canonical_url: Optional[str] = None
+    raw_identifier: Optional[str] = None
+    extracted_text: Optional[str] = None
     raw_content: Dict[str, Any] = Field(default_factory=dict)
     fetched_at: Optional[str] = None
+
+    def __init__(self, **data: Any):
+        if "regulator_id" in data and "source_regulator" not in data:
+            data["source_regulator"] = data["regulator_id"]
+        super().__init__(**data)
 
 
 class CandidateIssuance(BaseModel):
@@ -44,12 +56,28 @@ class CandidateIssuance(BaseModel):
 
 
 class NormalizedIssuance(BaseModel):
-    source_regulator: str
-    source_category: str
-    issuance_identifier: str
-    issuance_title: str
-    source_url: str
+    source_regulator: Optional[str] = Field(default="UNKNOWN", alias="regulator_id")
+    regulator_id: Optional[str] = None
+    category_id: Optional[str] = None
+    issuance_id: Optional[str] = None
+    issuance_identifier: Optional[str] = None
+    issuance_title: Optional[str] = None
+    title: Optional[str] = None
+    source_url: Optional[str] = None
+    canonical_url: Optional[str] = None
+    content_quality: Optional[ContentQuality] = ContentQuality.UNVERIFIED
     raw_payload: Dict[str, Any] = Field(default_factory=dict)
+
+    def __init__(self, **data: Any):
+        if "regulator_id" in data and "source_regulator" not in data:
+            data["source_regulator"] = data["regulator_id"]
+        if "issuance_id" in data and "issuance_identifier" not in data:
+            data["issuance_identifier"] = data["issuance_id"]
+        if "title" in data and "issuance_title" not in data:
+            data["issuance_title"] = data["title"]
+        if "canonical_url" in data and "source_url" not in data:
+            data["source_url"] = data["canonical_url"]
+        super().__init__(**data)
 
 
 class IssuanceStateRecord(BaseModel):
