@@ -1,5 +1,3 @@
-# Location: src/adapters/sec.py (or core/adapters/sec_adapter.py)
-
 import logging
 from datetime import datetime
 import requests
@@ -16,7 +14,7 @@ class CandidateIssuance:
         self.date_posted = date_posted
 
 class SECAdapter:
-    BASE_URL = "https://www.sec.gov.ph"  # Match test requirement
+    BASE_URL = "https://www.sec.gov.ph"
 
     def __init__(self):
         self.source_regulator = "SEC"
@@ -33,7 +31,6 @@ class SECAdapter:
         }
 
     def fetch(self):
-        """Standard adapter interface alias expected by unit tests."""
         return self.fetch_latest_issuances()
 
     def fetch_latest_issuances(self):
@@ -47,19 +44,33 @@ class SECAdapter:
             response.raise_for_status()
             
             soup = BeautifulSoup(response.text, "html.parser")
-            for anchor in soup.find_all("a", href=True):
-                href = anchor["href"]
-                text = anchor.get_text(strip=True)
-                if href.endswith(".pdf") or "MC-NO" in text.upper() or "MEMORANDUM" in text.upper():
-                    identifier = text if text else href.split("/")[-1]
-                    candidates.append(
-                        CandidateIssuance(
-                            source_regulator=self.source_regulator,
-                            issuance_identifier=identifier,
-                            title=text or identifier,
-                            link=href if href.startswith("http") else f"{self.base_url}{href}"
-                        )
-                    )
+            
+            # Check table rows first for SEC circular tables
+            rows = soup.find_all("tr")
+            if rows:
+                for row in rows:
+                    anchors = row.find_all("a", href=True)
+                    if not anchors:
+                        continue
+                    row_text = row.get_text(" ", strip=True)
+                    for anchor in anchors:
+                        href = anchor["href"]
+                        candidates.append({
+                            "title": row_text or "SEC Issuance",
+                            "url": href if href.startswith("http") else f"{self.base_url}{href}",
+                            "regulator": "SEC"
+                        })
+            else:
+                # General fallback for anchor lists
+                for anchor in soup.find_all("a", href=True):
+                    href = anchor["href"]
+                    text = anchor.get_text(strip=True)
+                    candidates.append({
+                        "title": text or href,
+                        "url": href if href.startswith("http") else f"{self.base_url}{href}",
+                        "regulator": "SEC"
+                    })
+
             logger.info(f"Successfully extracted {len(candidates)} candidates from SEC.")
         except requests.exceptions.HTTPError as e:
             logger.error(f"Failed to fetch SEC issuances: {e}")
