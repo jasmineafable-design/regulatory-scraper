@@ -38,11 +38,11 @@ class SECAdapter(BaseAdapter):
                     cleaned_id = text.split(":")[0].strip().replace(" ", "-") if ":" in text else text.replace(" ", "-")
                     
                     candidate = CandidateIssuance(
-                        regulator_id=self.regulator_id,
+                        source_regulator=self.regulator_id,
+                        source_category="MC",
                         issuance_identifier=f"SEC-{cleaned_id}",
-                        title=text,
-                        document_url=href,
-                        category="MC",
+                        issuance_title=text,
+                        source_url=href,
                     )
                     candidates.append(candidate)
 
