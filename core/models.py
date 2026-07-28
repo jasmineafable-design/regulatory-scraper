@@ -1,69 +1,49 @@
-from dataclasses import dataclass, field
-from enum import Enum
-from typing import Any, Dict, List, Optional
+from dataclasses import dataclass
+from typing import Optional
 
 
-class ContentQuality(Enum):
-    """Quality classification for scraped document text."""
-    VALID = "VALID"
-    LOW_QUALITY = "LOW_QUALITY"
-    UNEXTRACTABLE_PDF = "UNEXTRACTABLE_PDF"
+@dataclass
+class CandidateIssuance:
+    """Standardized output emitted by regulator source adapters (Section 5.1)."""
+
+    source_regulator: str  # Regulator name: 'BIR', 'IC', 'SEC'
+    source_category: str  # Issuance category (e.g., 'RMC', 'CL', 'MC')
+    issuance_identifier: str  # Stable ID in regulator's convention (used for dedup)
+    issuance_title: str  # Human-readable title
+    source_url: str  # Official regulator link
+    raw_content_reference: str  # Pointer/text reference to raw content for Assess/Archive
+    fetched_at: str  # ISO timestamp of fetch attempt
+    validation_status: str  # Status: 'genuine', 'blocked', 'error', 'malformed'
+    publication_date: Optional[str] = None  # Date published, if available
 
 
-@dataclass(frozen=True)
-class RawIssuance:
-    """Represents a single raw regulatory publication scraped directly from a website."""
-    regulator_id: str
-    category_id: str
-    title: str
-    canonical_url: str
-    raw_identifier: Optional[str] = None
-    published_date_str: Optional[str] = None
-    pdf_url: Optional[str] = None
-    extracted_text: Optional[str] = None
+@dataclass
+class BriefingRecord:
+    """Assembled content-contract briefing payload (Section 5.2)."""
 
+    # Carried from Candidate Issuance
+    issuance_identifier: str
+    source_regulator: str
+    source_category: str
+    issuance_title: str
 
-@dataclass(frozen=True)
-class NormalizedIssuance:
-    """Represents a clean regulatory publication with a guaranteed unique identifier."""
-    issuance_id: str
-    regulator_id: str
-    category_id: str
-    title: str
-    canonical_url: str
-    content_quality: ContentQuality
-    published_date_str: Optional[str] = None
-    pdf_url: Optional[str] = None
-    cleaned_text: Optional[str] = None
-    metadata: Dict[str, Any] = field(default_factory=dict)
+    # Official link
+    official_source_link: str
 
+    # Pipeline status
+    completeness_status: str  # 'complete' or 'degraded'
+    composed_at: str  # ISO timestamp when composed
 
-@dataclass(frozen=True)
-class ScraperTargetConfig:
-    """Configuration settings for a single regulatory scraping category."""
-    regulator_id: str
-    category_id: str
-    category_name: str
-    enabled: bool
-    check_interval_hours: int = 24
+    # AI-Advisory fields (explicitly marked/set as unavailable if failed or missing)
+    executive_summary: Optional[str] = None
+    insurance_entity_impact: Optional[str] = None  # Impact on MIGI / MILI
+    brokerage_entity_impact: Optional[str] = None  # Impact on MIBI
+    risk_priority_level: Optional[str] = None
+    suggested_action: Optional[str] = None
 
+    # Best-effort document link
+    archived_document_link: Optional[str] = None
 
-@dataclass(frozen=True)
-class BusinessEntityConfig:
-    """Business context guidance for AI risk evaluation."""
-    entity_code: str
-    entity_full_name: str
-    primary_focus: str
-    key_topics_of_interest: List[str]
-
-
-@dataclass(frozen=True)
-class IssuanceStateRecord:
-    """Record representing a previously seen and processed issuance stored in state ledger."""
-    issuance_id: str
-    regulator_id: str
-    category_id: str
-    first_seen_timestamp: str
-    processed_status: str  # e.g., "PROCESSED", "BASELINE", "FAILED_NOTIFICATION"
-    title: str
-    canonical_url: str
+    # Lifecycle commitment timestamps
+    notified_at: Optional[str] = None
+    committed_at: Optional[str] = None
