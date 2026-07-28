@@ -1,62 +1,66 @@
+import argparse
+import sys
+from typing import List
+
 from core.adapters.bir_adapter import BIRAdapter
 from core.adapters.ic_adapter import ICAdapter
-from core.adapters.sec_adapter import SECAdapter  # <--- Added
-from core.config import SystemConfig
+from core.adapters.sec_adapter import SECAdapter
+from core.config import settings
 from core.logger import setup_logger
+from core.models import CandidateIssuance
+from core.notifier import NotificationDispatcher
 from core.state import StateManager
 
 logger = setup_logger("main")
 
 
-def main() -> None:
-    """Primary system execution entry point."""
-    logger.info("Initializing Regulatory Scraper System...")
+def parse_args():
+    parser = argparse.ArgumentParser(description="Regulatory Intelligence Orchestrator")
+    parser.add_argument(
+        "--is-opening-run",
+        action="store_true",
+        help="Designates this execution as the business day opening run (10:00 AM). Emits Daily Monitoring Report if clear.",
+    )
+    return parser.parse_args()
 
-    config = SystemConfig.load()
-    logger.info(f"System Environment: {config.environment}")
 
-    state_mgr = StateManager()
+def main():
+    args = parse_args()
+    logger.info(f"Starting Regulatory Intelligence cycle (Opening Run: {args.is_opening_run})...")
 
-    # Active Adapters Array
+    state_manager = StateManager(db_path=settings.STATE_FILE_PATH)
+    dispatcher = NotificationDispatcher(webhook_url=settings.SLACK_WEBHOOK_URL)
+
     adapters = [
         BIRAdapter(),
         ICAdapter(),
-        SECAdapter(),  # <--- Added
+        SECAdapter(),
     ]
 
-    total_new_discoveries = 0
+    new_discoveries: List[CandidateIssuance] = []
 
     for adapter in adapters:
-        logger.info(f"--- Running Adapter: {adapter.regulator_id} ---")
-        
+        logger.info(f"Executing adapter for {adapter.regulator_id}...")
         try:
             candidates = adapter.fetch_latest_issuances()
-            logger.info(f"Fetched {len(candidates)} candidate items from {adapter.regulator_id}")
-
-            adapter_new_count = 0
             for candidate in candidates:
-                identifier = candidate.issuance_identifier
-
-                if not state_mgr.is_seen(identifier):
-                    logger.info(f"[NEW DISCOVERY] {identifier} - {candidate.title[:60]}...")
-                    state_mgr.record_issuance(candidate, status="PROCESSED")
-                    adapter_new_count += 1
-                else:
-                    logger.debug(f"[SEEN] Skipping {identifier}")
-
-            total_new_discoveries += adapter_new_count
-            logger.info(f"Completed {adapter.regulator_id}: {adapter_new_count} new discoveries.")
-
+                if not state_manager.is_seen(candidate.source_regulator, candidate.issuance_identifier):
+                    new_discoveries.append(candidate)
+                    state_manager.mark_seen(candidate.source_regulator, candidate.issuance_identifier)
         except Exception as e:
-            logger.error(f"Error executing adapter {adapter.regulator_id}: {e}", exc_info=True)
+            logger.error(f"Adapter execution failed for {adapter.regulator_id}: {e}", exc_info=True)
 
-    if total_new_discoveries > 0:
-        state_mgr.commit()
-        logger.info(f"Committed {total_new_discoveries} new issuance records to state ledger.")
+    if new_discoveries:
+        logger.info(f"Found {len(new_discoveries)} new issuance(s). Dispatching Regulatory Briefing...")
+        dispatcher.dispatch_alert(new_discoveries)
+        state_manager.save_state()
+    elif args.is_opening_run:
+        logger.info("Opening run clear. Dispatching Daily Monitoring Report...")
+        dispatcher.dispatch_daily_report(status="ALL_CLEAR", count=0)
     else:
-        logger.info("No new unseen regulatory issuances found during this run.")
+        logger.info("Polling run complete. No new issuances discovered. Remaining silent.")
 
-    logger.info("Regulatory Scraper System execution completed successfully.")
+    logger.info("Cycle complete.")
 
 
 if __name__ == "__main__":
