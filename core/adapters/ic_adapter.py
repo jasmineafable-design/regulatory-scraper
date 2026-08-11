@@ -1,4 +1,5 @@
 import logging
+import os
 import re
 from typing import List, Optional
 
@@ -108,7 +109,14 @@ class ICAdapter(BaseAdapter):
     def fetch_latest_issuances(self) -> List[CandidateIssuance]:
         logger.info(f"[{self.regulator_id}] Fetching latest issuances from {self.target_url}...")
 
-        html_content = self.http_client.fetch_html(self.regulator_id, self.target_url)
+        # IC blocks requests from GitHub Actions' IP ranges specifically
+        # (confirmed via a real workflow run, not guessed) -- see Handoff §13
+        # and core/http_client.py. Routing through the proxy costs nothing
+        # extra when SCRAPER_PROXY_API_KEY isn't set locally/in tests: this
+        # only takes effect if that env var is present.
+        html_content = self.http_client.fetch_html(
+            self.regulator_id, self.target_url, use_proxy=bool(os.getenv("SCRAPER_PROXY_API_KEY"))
+        )
 
         if not self.validate(html_content):
             raise ParsingError(
