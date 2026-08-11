@@ -44,3 +44,17 @@ class StateManager:
                 logger.error(f"Failed to load state file at {self.filepath}: {e}")
                 self.seen_data = {}
         else:
+            self.filepath.parent.mkdir(parents=True, exist_ok=True)
+            self.seen_data = {}
+            self._save_state()
+
+    def _save_state(self) -> None:
+        """Saves current state data to the JSON file."""
+        try:
+            self.filepath.parent.mkdir(parents=True, exist_ok=True)
+            with open(self.filepath, "w", encoding="utf-8") as f:
+                json.dump(self.seen_data, f, indent=2)
+        except Exception as e:
+            logger.error(f"Failed to save state file at {self.filepath}: {e}")
+
+    def
