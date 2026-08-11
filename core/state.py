@@ -57,4 +57,56 @@ class StateManager:
         except Exception as e:
             logger.error(f"Failed to save state file at {self.filepath}: {e}")
 
-    def
+    def is_seen(self, item_id: str) -> bool:
+        """Checks if an item ID has already been recorded."""
+        return item_id in self.seen_data
+
+    def mark_seen(
+        self,
+        item_id: str,
+        agency: str,
+        title: str,
+        status: str = "PROCESSED",
+        category: Optional[str] = None,
+    ) -> None:
+        """Records an item as seen and persists state to disk."""
+        self.seen_data[item_id] = {
+            "agency": agency,
+            "category": category,
+            "title": title,
+            "status": status,
+        }
+        self._save_state()
+
+    def is_category_baselined(self, agency: str, category: str) -> bool:
+        """Returns True if any record for this agency/category has ever been stored.
+
+        Used to implement the §13 baseline-exclusion rule: a category's first-ever
+        run must record its backlog as known without notifying on it.
+        """
+        return any(
+            record.get("agency") == agency and record.get("category") == category
+            for record in self.seen_data.values()
+        )
+
+    # -- Run-tracking (core/schedule.py) --------------------------------------
+    # Stored under a reserved "__meta__" key in the same JSON file rather than a
+    # separate store, so schedule-decision state travels with the rest of
+    # Issuance State (§3.5) instead of introducing a fifth record. "__meta__" is
+    # not a valid issuance identifier, so it can't collide with real entries.
+
+    def get_last_run_at(self) -> Optional[str]:
+        """ISO timestamp of the last completed run, or None if there's no history."""
+        return self.seen_data.get("__meta__", {}).get("last_run_at")
+
+    def get_last_opening_check_date(self) -> Optional[str]:
+        """ISO date (YYYY-MM-DD) of the last run recognized as an opening check."""
+        return self.seen_data.get("__meta__", {}).get("last_opening_check_date")
+
+    def record_run(self, run_at: str, is_opening_check: bool) -> None:
+        """Records that a run happened, for core.schedule's next decision."""
+        meta = self.seen_data.setdefault("__meta__", {})
+        meta["last_run_at"] = run_at
+        if is_opening_check:
+            meta["last_opening_check_date"] = run_at[:10]
+        self._save_state()
