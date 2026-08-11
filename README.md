@@ -92,6 +92,7 @@ not oversights in this consolidation.
 | `NOTIFICATION_RECIPIENTS` | Fallback only | Comma-separated recipient list used when no Sheet-based recipient mapping is configured for a given regulator. |
 | `GOOGLE_SERVICE_ACCOUNT_JSON` | For Sheet-based config | Path to a Google service account credentials file. If unset, Operational/Business Context Configuration falls back to defaults and env vars — the system does not fail, per the Foundation's "optional, no-op if unset" convention. |
 | `SHEET_ID` | With the above | The spreadsheet ID containing a `Sources` tab (Regulator/Category/Recipients) and a `BusinessContext` tab. |
+| `SCRAPER_PROXY_API_KEY` | For IC | insurance.gov.ph blocks requests from GitHub Actions' IP ranges specifically (confirmed via a real run). A [ScraperAPI](https://www.scraperapi.com/) key (or compatible service using the same `?api_key=&url=` convention) routes IC's requests around that block. Without it, IC's adapter will fail loudly on every run rather than silently returning nothing. BIR and SEC don't need this. |
 
 ## Running Tests
 
