@@ -57,6 +57,7 @@ jobs:
           NOTIFICATION_RECIPIENTS: ${{ secrets.NOTIFICATION_RECIPIENTS }}
           GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
           SHEET_ID: ${{ secrets.SHEET_ID }}
+          SCRAPER_PROXY_API_KEY: ${{ secrets.SCRAPER_PROXY_API_KEY }}
         run: |
           # main.py itself decides -- via core/schedule.py, against the
           # Sheet-configured business days/opening time/polling interval and
