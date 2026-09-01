@@ -16,31 +16,54 @@ logger = logging.getLogger(__name__)
 
 class ICAdapter(BaseAdapter):
     """
-    Adapter for the Insurance Commission (IC). IC's site is a WordPress
-    category-archive; per Handoff §13 its nav label doesn't always match its URL
-    slug or issuance prefix, so identifier extraction is regex-based against the
-    visible text rather than assumed from the page structure.
+    Adapter for the Insurance Commission (IC). IC's site is WordPress-based,
+    but different sections use different page templates (confirmed live,
+    2026-09):
+      - Circular Letters (/category/circular-letters/): a standard category
+        archive, one <article><h2 class="entry-title"> per item.
+      - Advisories (/advisories/) and Memorandum Circulars (/memoranda/):
+        a page-builder ("Premium Blog") widget -- only one wrapping
+        <article> for the whole page, with each item's link instead under
+        its own <span class="premium-blog-entry-title">. A parser that only
+        looks for one <article> per item (as this adapter previously did)
+        finds just one candidate total on these pages, silently missing
+        everything else.
+
+    Per Handoff §13, nav labels don't always match URL slugs or issuance
+    prefixes, so identifier extraction is regex-based against the visible
+    text rather than assumed from page/URL structure.
     """
 
     BASE_URL = "https://www.insurance.gov.ph"
-    DEFAULT_PATH = "/category/circular-letters/"
     DEFAULT_CATEGORY = "IC-CL"
 
+    # Path per category, relative to BASE_URL. Confirmed live, 2026-09 --
+    # note memoranda/advisories are NOT under /category/ despite the old
+    # nav-label assumption.
+    _CATEGORY_PATHS = {
+        "IC-CL": "/category/circular-letters/",
+        "IC-ADVISORY": "/advisories/",
+        "IC-MC": "/memoranda/",
+    }
+
     # IC needs a metered scraping proxy to get past GitHub Actions' IP block
-    # (see core/http_client.py), and that proxy costs real money per request
-    # (confirmed 2026-08-11: ScraperAPI's free tier is 1,000 credits/month at
-    # 10 credits/request -- only ~100 requests/month, not 1,000). Checking IC
-    # on every ~30-minute recurring run (roughly 19x/day) would exhaust a
-    # free-tier budget in under a week. Restricting IC to the business day's
-    # opening check only (main.py enforces this via OPENING_CHECK_ONLY) keeps
-    # it comfortably within budget (~1 request/business day, ~22/month) at
-    # the cost of IC updates surfacing up to a day later than BIR's, which
-    # check on every run. Revisit if/when a paid plan makes the tighter
-    # interval affordable.
+    # (see core/http_client.py), and that proxy costs real money per request.
+    # Restricting IC to the business day's opening check only (main.py
+    # enforces this via OPENING_CHECK_ONLY) keeps proxy usage well within
+    # budget across all three IC categories combined with SEC's.
     OPENING_CHECK_ONLY = True
 
+    # Matches "Circular Letter No. 2024-11" / "MC ... 2024-01" / etc.
     _IDENTIFIER_RE = re.compile(
         r"((?:Circular\s+Letter|Memorandum\s+Circular|Advisory|CL|MC|ADV)\s*(?:No\.?)?\s*\d+[-–]\d+)",
+        re.IGNORECASE,
+    )
+    # Matches the letter-prefixed docket format Advisories actually use, e.g.
+    # "Advisory No. RS-2026-008" or "... MSS-2026-014" (confirmed live,
+    # 2026-09) -- the plain _IDENTIFIER_RE above requires digits right after
+    # the prefix and won't match these.
+    _DOCKET_IDENTIFIER_RE = re.compile(
+        r"(Advisory\s*(?:No\.?)?\s*[A-Z]{2,5}-\d{4}-\d+)",
         re.IGNORECASE,
     )
     _PREFIX_MAP = {
@@ -53,8 +76,11 @@ class ICAdapter(BaseAdapter):
     }
 
     def __init__(self, target_path: Optional[str] = None, category: Optional[str] = None):
-        self.target_url = self.BASE_URL + (target_path or self.DEFAULT_PATH)
-        self.category = category or self.DEFAULT_CATEGORY
+        self.category = (category or self.DEFAULT_CATEGORY).upper()
+        path = target_path or self._CATEGORY_PATHS.get(self.category)
+        if not path:
+            raise ValueError(f"No known IC path for category '{self.category}'.")
+        self.target_url = self.BASE_URL + path
         self.http_client = ScrapingHttpClient()
 
     @property
@@ -65,10 +91,13 @@ class ICAdapter(BaseAdapter):
         if not html_content or not html_content.strip():
             return False
         soup = BeautifulSoup(html_content, "html.parser")
-        # A genuine category-archive page has at least one article/listing anchor.
         return bool(soup.find("article")) or bool(soup.find("a", href=True))
 
     def _extract_identifier(self, title: str) -> str:
+        docket_match = self._DOCKET_IDENTIFIER_RE.search(title)
+        if docket_match:
+            return clean_text(docket_match.group(1))
+
         match = self._IDENTIFIER_RE.search(title)
         if not match:
             return title[:40].strip()
@@ -80,28 +109,40 @@ class ICAdapter(BaseAdapter):
         prefix = self._PREFIX_MAP.get(first_word, first_word.upper())
         return f"{prefix} No. {number}"
 
+    def _find_item_anchors(self, soup: BeautifulSoup) -> List:
+        """Finds one anchor per listed item, trying each known IC page
+        template in order (see class docstring) before falling back to
+        "every link on the page" as a last resort."""
+        selectors = ["article h2.entry-title a[href]", "span.premium-blog-entry-title a[href]"]
+        for selector in selectors:
+            found = soup.select(selector)
+            if found:
+                return found
+
+        # Fallback 1: one anchor per <article>, however it's laid out inside.
+        articles = soup.find_all("article")
+        if articles:
+            anchors = []
+            for article in articles:
+                heading = article.find("h2") or article.find("a")
+                anchor = heading if (heading and heading.name == "a") else (heading.find("a") if heading else None)
+                if anchor and anchor.has_attr("href"):
+                    anchors.append(anchor)
+            if anchors:
+                return anchors
+
+        # Fallback 2: no recognizable per-item structure at all -- every link
+        # on the page. Noisier (may include nav/footer links), but better
+        # than silently returning nothing if IC's markup changes again.
+        return soup.find_all("a", href=True)
+
     def parse(self, html_content: str) -> List[CandidateIssuance]:
         soup = BeautifulSoup(html_content, "html.parser")
         candidates: List[CandidateIssuance] = []
 
-        articles = soup.find_all("article")
-        items = articles if articles else soup.find_all("a", href=True)
-
-        for item in items:
-            if articles:
-                heading = item.find("h2") or item.find("a")
-                if not heading:
-                    continue
-                anchor = heading if heading.name == "a" else heading.find("a")
-            else:
-                heading = item
-                anchor = item
-
-            if not heading or not anchor or not anchor.has_attr("href"):
-                continue
-
-            title_text = clean_text(heading.get_text())
-            href = anchor["href"]
+        for anchor in self._find_item_anchors(soup):
+            title_text = clean_text(anchor.get_text())
+            href = anchor.get("href")
             if not title_text or not href:
                 continue
 
@@ -112,7 +153,7 @@ class ICAdapter(BaseAdapter):
                     issuance_identifier=self._extract_identifier(title_text),
                     issuance_title=title_text,
                     source_url=make_absolute_url(self.target_url, href),
-                    raw_content_reference=str(item),
+                    raw_content_reference=str(anchor),
                     validation_status="genuine",
                 )
             )

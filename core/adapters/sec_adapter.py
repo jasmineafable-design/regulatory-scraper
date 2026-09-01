@@ -26,20 +26,22 @@ class SECAdapter(BaseAdapter):
     (www.sec.gov.ph), confirmed live via a real browser session:
       - Memorandum Circulars: /mc-{year}/
       - Resolutions:          /category/resolution-{year}/
-      - (Opinions/Decisions exist at /category/opinion-{year}/ and
-        /category/decision-{year}/ respectively, not yet wired up here --
-        see the ScraperAPI free-tier budget note below.)
+      - Opinions:             /category/opinion-{year}/
+      - Decisions:            /category/decision-{year}/
 
     www.sec.gov.ph itself blocks requests from datacenter/cloud IP ranges at
     the network level (confirmed: a plain server-side request to it doesn't
     even get a response) -- the same class of block IC has (see
     core/adapters/ic_adapter.py), not a JS-rendering issue. So, like IC, SEC
-    must go through the scraping proxy and is opening-check-only to keep
-    proxy usage inside ScraperAPI's free tier: IC (1 category) + SEC-MC +
-    SEC-Resolution = 3 opening-check-only categories, ~66 requests/month,
-    comfortably under the ~100/month free-tier ceiling. Adding Opinions
-    and/or Decisions later will need a paid ScraperAPI plan (or dropping a
-    category) to stay within budget.
+    must go through the scraping proxy and is opening-check-only.
+
+    Budget note (corrected 2026-09 against the real ScraperAPI dashboard):
+    basic (non-JS-rendered) proxy requests cost ~1 credit each, not the
+    ~10 credits/request an earlier estimate assumed -- the free tier is
+    ~1,000 requests/month, not ~100. All 3 IC categories + all 4 SEC
+    categories, opening-check-only across ~22 business days/month, comes to
+    ~154 requests/month -- comfortably within budget with no paid plan
+    needed.
     """
 
     MAIN_BASE_URL = "https://www.sec.gov.ph"
@@ -56,6 +58,8 @@ class SECAdapter(BaseAdapter):
     _CATEGORY_PATHS = {
         "SEC-MC": "/mc-{year}/",
         "SEC-RESOLUTION": "/category/resolution-{year}/",
+        "SEC-OPINION": "/category/opinion-{year}/",
+        "SEC-DECISION": "/category/decision-{year}/",
     }
 
     def __init__(self, target_url: Optional[str] = None, category: Optional[str] = None, year: Optional[int] = None):
