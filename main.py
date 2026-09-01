@@ -44,9 +44,13 @@ ADAPTERS = [
     BIRAdapter(),  # RMC (default category)
     BIRAdapter(category="RR"),
     BIRAdapter(category="RMO"),
-    ICAdapter(),
+    ICAdapter(),  # IC-CL (default category)
+    ICAdapter(category="IC-ADVISORY"),
+    ICAdapter(category="IC-MC"),
     SECAdapter(),  # SEC-MC (default category)
     SECAdapter(category="SEC-RESOLUTION"),
+    SECAdapter(category="SEC-OPINION"),
+    SECAdapter(category="SEC-DECISION"),
 ]
 
 
