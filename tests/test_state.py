@@ -38,6 +38,22 @@ def test_state_manager_deduplication(tmp_path: Path):
     assert reloaded_mgr.is_seen(item_id)
 
 
+def test_instantiation_alone_does_not_write_a_file(tmp_path: Path):
+    """Regression test: StateManager is created on every invocation, including
+    the many "nothing to do, skip this wake-up" runs where main.py returns
+    before any real check happens. If simply instantiating it (with no file
+    present) wrote an empty file to disk, the GitHub Actions workflow's
+    unconditional "Save updated state" step would upload that empty file as
+    the newest cache entry -- silently wiping out all real baseline/
+    seen-issuance history recorded by a genuine prior run. Only an actual
+    state-changing operation (mark_seen/record_run) should ever write."""
+    test_state_file = tmp_path / "never_created_by_instantiation.json"
+
+    StateManager(filepath=str(test_state_file))
+
+    assert not test_state_file.exists()
+
+
 def test_baseline_seeding(tmp_path: Path):
     """Ensures baseline seeding records items with status BASELINE."""
     test_state_file = tmp_path / "test_state.json"
