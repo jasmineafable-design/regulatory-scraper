@@ -3,9 +3,10 @@ Regulatory Scraper — entry point.
 
 Wires the Federated Source Adapters (BIR, IC, SEC) into the Shared Core's
 deterministic pipeline: Fetch -> Validate -> Detect -> Assess -> Compose -> Notify
--> Commit State (Foundation §3.6). Assess remains stubbed as "UNAVAILABLE" per the
-approved Phase-1 behavior (core/compose.py) — AI integration is Phase 4 and is not
-part of this consolidation.
+-> Commit State (Foundation §3.6). Assess (core/assess.py, Phase 4) calls the
+OpenAI API for AI-advisory impact assessment; if OPENAI_API_KEY is unset or
+the call fails for any reason, AI fields fall back to "UNAVAILABLE" per the
+frozen fail-open behavior (core/compose.py) rather than blocking the briefing.
 
 One adapter's failure is isolated from the others (§3.4 principle 3) but is never
 swallowed (§3.4 principle 2): failures are collected and re-raised after every
@@ -25,6 +26,7 @@ from typing import Dict, List, Tuple
 from zoneinfo import ZoneInfo
 
 from models.issuance import BriefingRecord, CandidateIssuance
+from core.assess import Assessor
 from core.commit_state import StateCommitter
 from core.compose import Composer
 from core.detect import Detector
@@ -38,7 +40,14 @@ from core.adapters import BIRAdapter, ICAdapter, SECAdapter
 
 logger = setup_logger("main")
 
-ADAPTERS = [BIRAdapter(), ICAdapter(), SECAdapter()]
+ADAPTERS = [
+    BIRAdapter(),  # RMC (default category)
+    BIRAdapter(category="RR"),
+    BIRAdapter(category="RMO"),
+    ICAdapter(),
+    SECAdapter(),  # SEC-MC (default category)
+    SECAdapter(category="SEC-RESOLUTION"),
+]
 
 
 def build_notification_channel(recipient_matrix: Dict[Tuple[str, str], List[str]]):
@@ -99,7 +108,8 @@ def run(is_opening_check: bool, state_manager: "StateManager" = None, config_rea
 
     state_manager = state_manager or StateManager()
     detector = Detector(state_manager)
-    composer = Composer()
+    assessor = Assessor(config_reader=config_reader)
+    composer = Composer(assessor=assessor)
     committer = StateCommitter(state_manager)
     channel = build_notification_channel(recipient_matrix)
     dispatcher = NotificationDispatcher(channel)
@@ -110,6 +120,13 @@ def run(is_opening_check: bool, state_manager: "StateManager" = None, config_rea
     active_adapters = _select_active_adapters(config_reader)
 
     for adapter in active_adapters:
+        if getattr(adapter, "OPENING_CHECK_ONLY", False) and not is_opening_check:
+            # e.g. IC: metered scraping-proxy budget only allows ~1 check/day
+            # (core/adapters/ic_adapter.py). Previously declared but never
+            # enforced -- fetching on every recurring run silently exhausted
+            # the monthly quota within days.
+            logger.info(f"[{adapter.regulator_id}] Skipped this run — restricted to the opening check only.")
+            continue
         try:
             candidates = adapter.fetch_latest_issuances()
         except Exception as e:
@@ -183,10 +200,18 @@ def main() -> None:
         return
 
     logger.info(f"Starting pipeline run (opening_check={decision.is_opening_check}): {decision.reason}")
-    results = run(is_opening_check=decision.is_opening_check, state_manager=state_manager, config_reader=config_reader)
-    # Recorded in the same timezone used to make the decision above, so a run
-    # near local midnight is never misfiled under the wrong calendar day.
-    state_manager.record_run(now.isoformat(), decision.is_opening_check)
+    try:
+        results = run(is_opening_check=decision.is_opening_check, state_manager=state_manager, config_reader=config_reader)
+    finally:
+        # Recorded in the same timezone used to make the decision above, so a
+        # run near local midnight is never misfiled under the wrong calendar
+        # day. Must run even if run() raised (adapter fail-loud, §3.8) --
+        # otherwise a run that genuinely happened (however degraded) never
+        # gets remembered as "today's opening check already occurred," and
+        # every subsequent wake-up that day mistakenly re-treats itself as
+        # the first/opening check, repeatedly re-sending the Daily Monitoring
+        # Report all day instead of just once.
+        state_manager.record_run(now.isoformat(), decision.is_opening_check)
     logger.info(f"Pipeline run complete: {results}")
 
 
