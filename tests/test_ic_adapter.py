@@ -82,6 +82,45 @@ def test_ic_adapter_uses_proxy_when_key_configured(monkeypatch):
     assert captured["use_proxy"] is True
 
 
+# Confirmed live structure (2026-09): /advisories/ and /memoranda/ use a
+# page-builder widget with only one wrapping <article> for the whole page,
+# and per-item links under span.premium-blog-entry-title instead.
+SAMPLE_IC_PREMIUM_BLOG_HTML = """
+<html><body>
+    <article>
+        <span class="premium-blog-entry-title">
+            <a href="/advisory-no-rs-2026-008/">Advisory No. RS-2026-008 | Designation of Officer-in-Charge</a>
+        </span>
+        <span class="premium-blog-entry-title">
+            <a href="/imc-2024-01/">IMC 2024-01 | Increase in the Benefits for Compulsory Motor Vehicle Insurance</a>
+        </span>
+    </article>
+</body></html>
+"""
+
+
+def test_ic_adapter_category_paths():
+    assert ICAdapter(category="IC-ADVISORY").target_url == "https://www.insurance.gov.ph/advisories/"
+    assert ICAdapter(category="IC-MC").target_url == "https://www.insurance.gov.ph/memoranda/"
+
+
+def test_ic_adapter_parses_premium_blog_template():
+    # Regression test: the old article-per-item-only parser found just one
+    # candidate total on this template (the page's single wrapping
+    # <article>), silently missing every item after the first.
+    adapter = ICAdapter(category="IC-ADVISORY")
+    candidates = adapter.parse(SAMPLE_IC_PREMIUM_BLOG_HTML)
+
+    assert len(candidates) == 2
+    assert candidates[0].issuance_identifier == "Advisory No. RS-2026-008"
+
+
+def test_ic_adapter_extracts_docket_style_advisory_identifier():
+    adapter = ICAdapter()
+    identifier = adapter._extract_identifier("Advisory No. RS-2026-008 | Designation of Officer-in-Charge")
+    assert identifier == "Advisory No. RS-2026-008"
+
+
 def test_ic_adapter_skips_proxy_when_key_not_configured(monkeypatch):
     adapter = ICAdapter()
     monkeypatch.delenv("SCRAPER_PROXY_API_KEY", raising=False)

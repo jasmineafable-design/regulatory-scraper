@@ -59,6 +59,11 @@ def test_sec_adapter_resolution_category_targets_resolution_path():
     assert "/category/resolution-" in adapter.target_url
 
 
+def test_sec_adapter_opinion_and_decision_category_paths():
+    assert "/category/opinion-" in SECAdapter(category="SEC-OPINION").target_url
+    assert "/category/decision-" in SECAdapter(category="SEC-DECISION").target_url
+
+
 def test_sec_adapter_parse_produces_candidate_issuances():
     adapter = SECAdapter()
     candidates = adapter.parse(SAMPLE_SEC_MC_HTML)

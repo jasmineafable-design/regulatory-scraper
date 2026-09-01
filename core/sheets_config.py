@@ -1,3 +1,4 @@
+import json
 import logging
 import os
 from typing import Any, Dict, List, Optional, Set, Tuple
@@ -47,7 +48,20 @@ class SheetsConfigReader:
 
         try:
             import gspread  # imported lazily so the dependency is optional at runtime
-            self._gc = gspread.service_account(filename=self.service_account_json)
+
+            # GOOGLE_SERVICE_ACCOUNT_JSON is documented (README) as "paste the
+            # entire contents of the downloaded JSON key file" into the GitHub
+            # secret -- i.e. the raw JSON text itself, not a path to a file on
+            # disk (there is no such file in the GitHub Actions runner).
+            # Detect which one we actually got: valid JSON -> parse it and
+            # authenticate from the dict; otherwise, fall back to treating it
+            # as a real file path (keeps local/dev usage with an actual
+            # key-file path working too).
+            try:
+                credentials_dict = json.loads(self.service_account_json)
+                self._gc = gspread.service_account_from_dict(credentials_dict)
+            except json.JSONDecodeError:
+                self._gc = gspread.service_account(filename=self.service_account_json)
         except Exception as e:
             logger.error(f"Failed to authenticate with Google Sheets API: {e}")
             self._gc = None
