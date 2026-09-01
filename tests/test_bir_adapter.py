@@ -1,28 +1,55 @@
-from pathlib import Path
-
 import pytest
 
-from core.adapters.bir_adapter import BIRAdapter
+from core.adapters.bir_adapter import BIRAdapter, BIR_TEMPLATE_IDS
 from core.exceptions import ParsingError
 from models.issuance import CandidateIssuance
 
-FIXTURE_HTML = (Path(__file__).parent / "adapters" / "fixtures" / "bir_sample.html").read_text(encoding="utf-8")
+# A trimmed version of the HTML blob BIR's own API returns in
+# data[0]["content"]["Content"] -- confirmed via the predecessor system's
+# real DevTools capture (see bir_adapter.py's module docstring). This is
+# exactly the table body, since the API hands back rich text, not a page.
+FIXTURE_TABLE_HTML = """
+<table>
+  <tbody>
+    <tr>
+      <td>RMC No. 12-2026</td>
+      <td><a href="https://www.bir.gov.ph/images/bir_files/rmc12-2026.pdf" title="Full Text">Full Text</a>
+          Clarifying Tax Rules on Digital Transactions</td>
+      <td>February 10, 2026</td>
+    </tr>
+    <tr>
+      <td>RMC No. 11-2026</td>
+      <td><a href="https://www.bir.gov.ph/images/bir_files/rmc11-2026.pdf" title="Full Text">Full Text</a>
+          Filing Guidelines for Annual Information Returns</td>
+      <td>January 28, 2026</td>
+    </tr>
+  </tbody>
+</table>
+"""
+
+
+def _fake_payload(category_label: str = "revenue memorandum circular") -> dict:
+    return {
+        "data": [
+            {
+                "name": category_label,
+                "content": {"Content": FIXTURE_TABLE_HTML},
+            }
+        ]
+    }
 
 
 def test_bir_adapter_regulator_id():
     assert BIRAdapter().regulator_id == "BIR"
 
 
-def test_bir_adapter_validate_rejects_empty_or_tableless_content():
-    adapter = BIRAdapter()
-    assert adapter.validate("") is False
-    assert adapter.validate("<html><body>No table here</body></html>") is False
-    assert adapter.validate(FIXTURE_HTML) is True
+def test_bir_adapter_fetch_latest_issuances_parses_api_response(monkeypatch):
+    adapter = BIRAdapter(category="RMC")
+    monkeypatch.setattr(
+        adapter.http_client, "fetch_json", lambda regulator_id, url, extra_headers=None: _fake_payload()
+    )
 
-
-def test_bir_adapter_parse_produces_candidate_issuances():
-    adapter = BIRAdapter()
-    candidates = adapter.parse(FIXTURE_HTML)
+    candidates = adapter.fetch_latest_issuances()
 
     assert len(candidates) == 2
     first = candidates[0]
@@ -34,19 +61,36 @@ def test_bir_adapter_parse_produces_candidate_issuances():
     assert first.validation_status == "genuine"
 
 
-def test_bir_adapter_fetch_latest_issuances_uses_http_client(monkeypatch):
-    adapter = BIRAdapter()
-    monkeypatch.setattr(adapter.http_client, "fetch_html", lambda regulator_id, url: FIXTURE_HTML)
-
-    candidates = adapter.fetch_latest_issuances()
-
-    assert len(candidates) == 2
-    assert all(c.source_regulator == "BIR" for c in candidates)
-
-
-def test_bir_adapter_raises_on_invalid_response(monkeypatch):
-    adapter = BIRAdapter()
-    monkeypatch.setattr(adapter.http_client, "fetch_html", lambda regulator_id, url: "<html>blocked</html>")
+def test_bir_adapter_raises_when_api_returns_no_dataset(monkeypatch):
+    adapter = BIRAdapter(category="RMC")
+    monkeypatch.setattr(
+        adapter.http_client, "fetch_json", lambda regulator_id, url, extra_headers=None: {"data": []}
+    )
 
     with pytest.raises(ParsingError):
         adapter.fetch_latest_issuances()
+
+
+def test_bir_adapter_raises_when_template_id_label_does_not_match_category(monkeypatch):
+    """Guards against BIR silently reassigning a template_id to a different
+    category -- must fail loud rather than mislabel another category's
+    issuances as RMC."""
+    adapter = BIRAdapter(category="RMC")
+    monkeypatch.setattr(
+        adapter.http_client,
+        "fetch_json",
+        lambda regulator_id, url, extra_headers=None: _fake_payload(category_label="revenue regulation"),
+    )
+
+    with pytest.raises(ParsingError):
+        adapter.fetch_latest_issuances()
+
+
+def test_bir_adapter_raises_for_unknown_category():
+    adapter = BIRAdapter(category="NOT-A-REAL-CATEGORY")
+    with pytest.raises(ParsingError):
+        adapter.fetch_latest_issuances()
+
+
+def test_bir_template_ids_cover_default_category():
+    assert BIRAdapter.DEFAULT_CATEGORY in BIR_TEMPLATE_IDS

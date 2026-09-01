@@ -1,0 +1,182 @@
+"""
+Assess step (Foundation §3.6, Phase 4).
+
+AI-advisory only (Foundation principle 10): this module may summarize, assess
+impact, classify, and recommend action. It never decides whether an issuance
+exists, whether it's reported, or whether notification occurs -- those stay
+deterministic and happen in Detect/Notify regardless of what happens here.
+
+Approved AI/best-effort failure behavior (frozen, §3.8): if this fails for
+any reason (missing API key, network error, malformed response), Compose must
+still produce a Briefing Record from deterministic data alone, with the
+missing sections explicitly marked -- never silently incomplete, never
+withheld. This module enforces that by never raising: fetch_impact_assessment
+always returns an AssessmentResult, with .succeeded=False and an .error on
+any failure, and lets the caller (Composer) decide what "UNAVAILABLE" means
+for its own fields.
+"""
+
+import json
+import logging
+import os
+from dataclasses import dataclass
+from typing import List, Dict, Optional
+
+from models.issuance import CandidateIssuance
+
+logger = logging.getLogger(__name__)
+
+DEFAULT_MODEL = "gpt-4o-mini"
+
+# Bootstrap default, used only when the Sheet's BusinessContext tab is empty
+# or unreachable (§3.2 requires this to be non-technical-user-editable
+# without a code change -- this default exists so the system produces a
+# real assessment on day one, not so Jas has to fill in the Sheet before
+# anything works). Replace/extend via the Sheet once real priorities are
+# known; no code change needed for that.
+DEFAULT_BUSINESS_CONTEXT: List[Dict[str, str]] = [
+    {
+        "Field": "Company Profile",
+        "Checklist text": (
+            "MIGI (Moneeinsure General Insurance) and MILI (Moneeinsure Life "
+            "Insurance) are underwriters; MIBI (Moneeinsure Brokers Inc.) is a "
+            "brokerage, not an underwriter."
+        ),
+    },
+    {
+        "Field": "MIGI/MILI Impact Criteria",
+        "Checklist text": (
+            "Flag as impactful if the issuance affects: underwriting rules or "
+            "minimum rates, reserving/capital requirements, product approval or "
+            "filing requirements, reportorial/deadline obligations, or "
+            "policyholder-facing disclosure requirements for non-life or life "
+            "insurers."
+        ),
+    },
+    {
+        "Field": "MIBI Impact Criteria",
+        "Checklist text": (
+            "Flag as impactful if the issuance affects: broker/agent licensing "
+            "or accreditation, disclosure or fair-dealing obligations owed to "
+            "clients, commission/compensation rules, or reportorial obligations "
+            "specific to brokerages rather than underwriters."
+        ),
+    },
+    {
+        "Field": "Risk/Priority Guidance",
+        "Checklist text": (
+            "Rate as High if there's a compliance deadline or mandatory action "
+            "required; Medium if it's relevant but informational or "
+            "discretionary; Low if it has no material bearing on MIGI/MILI/MIBI."
+        ),
+    },
+]
+
+_SYSTEM_PROMPT = """You are a regulatory compliance analyst assisting an insurance group in the Philippines (MIGI, MILI, MIBI). Given one regulatory issuance and business context, produce a concise, actionable assessment.
+
+Respond with ONLY a JSON object (no markdown fences, no commentary) with exactly these keys:
+- "executive_summary": 1-3 sentences, plain language, what this issuance actually says/requires.
+- "insurance_entity_impact": impact to MIGI/MILI (non-life/life underwriters), or "No material impact identified." if none.
+- "brokerage_entity_impact": impact to MIBI (brokerage), or "No material impact identified." if none.
+- "risk_priority_level": one of "High", "Medium", "Low".
+- "suggested_action": a concrete next step, or "No action required." if none.
+
+Never fabricate specifics (dates, amounts, section numbers) not evidenced by the issuance title/content given to you -- if the title alone is insufficient to say something specific, keep the summary general rather than inventing detail."""
+
+
+@dataclass
+class AssessmentResult:
+    succeeded: bool
+    executive_summary: str = "UNAVAILABLE"
+    insurance_entity_impact: str = "UNAVAILABLE"
+    brokerage_entity_impact: str = "UNAVAILABLE"
+    risk_priority_level: str = "UNAVAILABLE"
+    suggested_action: str = "UNAVAILABLE"
+    error: Optional[str] = None
+
+
+class Assessor:
+    """AI-advisory impact assessment via the OpenAI API (Phase 4).
+
+    Reads Business Context Configuration from the Sheet (§3.2/§3.5) via the
+    injected SheetsConfigReader, falling back to DEFAULT_BUSINESS_CONTEXT when
+    the Sheet is empty/unreachable -- consistent with the rest of the system's
+    fail-open-on-configuration convention.
+    """
+
+    def __init__(self, config_reader=None, model: str = DEFAULT_MODEL):
+        self.config_reader = config_reader
+        self.model = model
+        self.api_key = os.getenv("OPENAI_API_KEY", "")
+        self._client = None
+
+    def _get_client(self):
+        if self._client is None:
+            from openai import OpenAI  # imported lazily: optional dependency,
+            # and keeps import-time failures from blocking the whole pipeline
+            # if the package somehow isn't installed in some environment.
+            self._client = OpenAI(api_key=self.api_key)
+        return self._client
+
+    def _business_context_text(self) -> str:
+        rows = []
+        if self.config_reader is not None:
+            try:
+                rows = self.config_reader.get_business_context()
+            except Exception as e:
+                logger.warning(f"Failed to read Business Context sheet, using default: {e}")
+                rows = []
+        if not rows:
+            rows = DEFAULT_BUSINESS_CONTEXT
+        lines = []
+        for row in rows:
+            field = str(row.get("Field") or "").strip()
+            text = str(row.get("Checklist text") or "").strip()
+            if field and text:
+                lines.append(f"- {field}: {text}")
+        return "\n".join(lines) if lines else "(no business context configured)"
+
+    def assess(self, candidate: CandidateIssuance) -> AssessmentResult:
+        """Never raises (see module docstring) -- always returns an
+        AssessmentResult, succeeded=False with .error set on any failure."""
+        if not self.api_key:
+            return AssessmentResult(succeeded=False, error="OPENAI_API_KEY not configured.")
+
+        try:
+            client = self._get_client()
+            business_context = self._business_context_text()
+            user_prompt = (
+                f"Business context:\n{business_context}\n\n"
+                f"Issuance:\n"
+                f"Regulator: {candidate.source_regulator}\n"
+                f"Category: {candidate.source_category}\n"
+                f"Identifier: {candidate.issuance_identifier}\n"
+                f"Title: {candidate.issuance_title}"
+            )
+            response = client.chat.completions.create(
+                model=self.model,
+                messages=[
+                    {"role": "system", "content": _SYSTEM_PROMPT},
+                    {"role": "user", "content": user_prompt},
+                ],
+                temperature=0.2,
+                response_format={"type": "json_object"},
+            )
+            raw = response.choices[0].message.content
+            data = json.loads(raw)
+
+            return AssessmentResult(
+                succeeded=True,
+                executive_summary=str(data.get("executive_summary") or "UNAVAILABLE"),
+                insurance_entity_impact=str(data.get("insurance_entity_impact") or "UNAVAILABLE"),
+                brokerage_entity_impact=str(data.get("brokerage_entity_impact") or "UNAVAILABLE"),
+                risk_priority_level=str(data.get("risk_priority_level") or "UNAVAILABLE"),
+                suggested_action=str(data.get("suggested_action") or "UNAVAILABLE"),
+            )
+        except Exception as e:
+            # Fail-open per the frozen AI/best-effort decision (§3.8, Handoff
+            # §"Approved AI/best-effort failure decision"): never let an AI
+            # failure block or delay the deterministic briefing.
+            logger.error(f"[{candidate.source_regulator}] AI assessment failed for "
+                         f"{candidate.issuance_identifier}: {e}")
+            return AssessmentResult(succeeded=False, error=str(e))

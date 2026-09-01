@@ -26,6 +26,19 @@ class ICAdapter(BaseAdapter):
     DEFAULT_PATH = "/category/circular-letters/"
     DEFAULT_CATEGORY = "IC-CL"
 
+    # IC needs a metered scraping proxy to get past GitHub Actions' IP block
+    # (see core/http_client.py), and that proxy costs real money per request
+    # (confirmed 2026-08-11: ScraperAPI's free tier is 1,000 credits/month at
+    # 10 credits/request -- only ~100 requests/month, not 1,000). Checking IC
+    # on every ~30-minute recurring run (roughly 19x/day) would exhaust a
+    # free-tier budget in under a week. Restricting IC to the business day's
+    # opening check only (main.py enforces this via OPENING_CHECK_ONLY) keeps
+    # it comfortably within budget (~1 request/business day, ~22/month) at
+    # the cost of IC updates surfacing up to a day later than BIR's, which
+    # check on every run. Revisit if/when a paid plan makes the tighter
+    # interval affordable.
+    OPENING_CHECK_ONLY = True
+
     _IDENTIFIER_RE = re.compile(
         r"((?:Circular\s+Letter|Memorandum\s+Circular|Advisory|CL|MC|ADV)\s*(?:No\.?)?\s*\d+[-–]\d+)",
         re.IGNORECASE,

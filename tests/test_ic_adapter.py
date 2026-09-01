@@ -44,7 +44,11 @@ def test_ic_adapter_parse_produces_candidate_issuances():
 
 def test_ic_adapter_fetch_latest_issuances_uses_http_client(monkeypatch):
     adapter = ICAdapter()
-    monkeypatch.setattr(adapter.http_client, "fetch_html", lambda regulator_id, url: SAMPLE_IC_ARTICLE_HTML)
+    monkeypatch.setattr(
+        adapter.http_client,
+        "fetch_html",
+        lambda regulator_id, url, use_proxy=False: SAMPLE_IC_ARTICLE_HTML,
+    )
 
     candidates = adapter.fetch_latest_issuances()
 
@@ -54,7 +58,41 @@ def test_ic_adapter_fetch_latest_issuances_uses_http_client(monkeypatch):
 
 def test_ic_adapter_raises_on_empty_response(monkeypatch):
     adapter = ICAdapter()
-    monkeypatch.setattr(adapter.http_client, "fetch_html", lambda regulator_id, url: "")
+    monkeypatch.setattr(adapter.http_client, "fetch_html", lambda regulator_id, url, use_proxy=False: "")
 
     with pytest.raises(ParsingError):
         adapter.fetch_latest_issuances()
+
+
+def test_ic_adapter_uses_proxy_when_key_configured(monkeypatch):
+    """SCRAPER_PROXY_API_KEY being set should make the adapter request the
+    proxy path -- this is what actually gets IC past GitHub Actions' IP block."""
+    adapter = ICAdapter()
+    monkeypatch.setenv("SCRAPER_PROXY_API_KEY", "fake-key-for-test")
+
+    captured = {}
+
+    def fake_fetch_html(regulator_id, url, use_proxy=False):
+        captured["use_proxy"] = use_proxy
+        return SAMPLE_IC_ARTICLE_HTML
+
+    monkeypatch.setattr(adapter.http_client, "fetch_html", fake_fetch_html)
+    adapter.fetch_latest_issuances()
+
+    assert captured["use_proxy"] is True
+
+
+def test_ic_adapter_skips_proxy_when_key_not_configured(monkeypatch):
+    adapter = ICAdapter()
+    monkeypatch.delenv("SCRAPER_PROXY_API_KEY", raising=False)
+
+    captured = {}
+
+    def fake_fetch_html(regulator_id, url, use_proxy=False):
+        captured["use_proxy"] = use_proxy
+        return SAMPLE_IC_ARTICLE_HTML
+
+    monkeypatch.setattr(adapter.http_client, "fetch_html", fake_fetch_html)
+    adapter.fetch_latest_issuances()
+
+    assert captured["use_proxy"] is False
