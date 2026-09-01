@@ -63,11 +63,38 @@ DEFAULT_BUSINESS_CONTEXT: List[Dict[str, str]] = [
         ),
     },
     {
+        "Field": "Strategic Initiative — Composite License",
+        "Checklist text": (
+            "MIGI/MILI are exploring a portfolio transfer in connection with a "
+            "composite license application (an insurer authorized to write both "
+            "life and non-life). Applies across all regulators (BIR, IC, SEC), "
+            "not just IC. Flag as High priority anything related to: composite "
+            "licensing requirements, portfolio transfer rules/procedures, "
+            "capital or minimum paid-up requirements for composite insurers, "
+            "restrictions on holding both life and non-life lines under one "
+            "entity, or tax/corporate-structuring implications of a portfolio "
+            "transfer."
+        ),
+    },
+    {
+        "Field": "Opportunity Flagging (Insurtech)",
+        "Checklist text": (
+            "Beyond compliance risk, actively flag anything that could be a "
+            "beneficial opportunity for an insurtech -- e.g. new digital "
+            "distribution allowances, regulatory sandboxes, relaxed "
+            "e-KYC/e-signature/electronic-filing rules, InsurTech-specific "
+            "circulars, or incentives for technology-driven insurers/brokers. "
+            "Note these explicitly as \"Opportunity\" in the suggested action, "
+            "not just risk."
+        ),
+    },
+    {
         "Field": "Risk/Priority Guidance",
         "Checklist text": (
-            "Rate as High if there's a compliance deadline or mandatory action "
-            "required; Medium if it's relevant but informational or "
-            "discretionary; Low if it has no material bearing on MIGI/MILI/MIBI."
+            "Rate as High if there's a compliance deadline, mandatory action "
+            "required, or a significant opportunity identified above; Medium if "
+            "relevant but informational or discretionary; Low if no material "
+            "bearing on MIGI/MILI/MIBI."
         ),
     },
 ]
