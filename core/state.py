@@ -44,9 +44,18 @@ class StateManager:
                 logger.error(f"Failed to load state file at {self.filepath}: {e}")
                 self.seen_data = {}
         else:
-            self.filepath.parent.mkdir(parents=True, exist_ok=True)
+            # Deliberately does NOT write an empty file here. StateManager is
+            # instantiated on every invocation, including the many "nothing
+            # to do, skip" wake-ups (main.py returns before any real check
+            # runs) -- if a cache restore ever misses on one of those, eagerly
+            # saving an empty state file here would let the workflow's
+            # unconditional "Save updated state" step upload that empty file
+            # as the newest cache entry, silently shadowing all real
+            # baseline/seen-issuance history for every future run. Only
+            # mark_seen()/record_run() (real state-changing operations, which
+            # only happen on an actual pipeline run) should ever write to
+            # disk.
             self.seen_data = {}
-            self._save_state()
 
     def _save_state(self) -> None:
         """Saves current state data to the JSON file."""
