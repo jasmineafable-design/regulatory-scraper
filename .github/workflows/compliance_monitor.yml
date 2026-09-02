@@ -52,6 +52,7 @@ jobs:
 
       - name: Execute Compliance Monitor
         env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           SMTP_SENDER_EMAIL: ${{ secrets.SMTP_SENDER_EMAIL }}
           SMTP_SENDER_PASSWORD: ${{ secrets.SMTP_SENDER_PASSWORD }}
           NOTIFICATION_RECIPIENTS: ${{ secrets.NOTIFICATION_RECIPIENTS }}
