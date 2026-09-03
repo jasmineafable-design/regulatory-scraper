@@ -28,8 +28,33 @@ DEFAULT_HEADERS = {
 }
 
 
+def _is_transient(err: Exception) -> bool:
+    """Whether a failure is plausibly resolved by retrying (network blip,
+    timeout, rate-limit, server-side 5xx) versus a durable failure (4xx other
+    than 429, DNS/URL error, etc.) that will just fail identically on retry.
+
+    Matters most for proxy (ScraperAPI) calls, where each retry is a real
+    metered credit spend (Jas: "i want to consume less as much as possible",
+    2026-09-03) -- retrying a request that's guaranteed to fail again just
+    burns credits for nothing.
+    """
+    if isinstance(err, requests.exceptions.HTTPError):
+        status = getattr(err.response, "status_code", None)
+        return status == 429 or (status is not None and 500 <= status < 600)
+    return isinstance(err, (requests.exceptions.Timeout, requests.exceptions.ConnectionError))
+
+
 class ScrapingHttpClient:
     """Robust HTTP client with built-in retries, timeouts, and user-agent spoofing."""
+
+    # Proxy (ScraperAPI) retries are capped lower than direct-fetch retries,
+    # and only actually retry on transient errors (see _is_transient) --
+    # every proxy attempt is a metered credit, so minimizing consumption
+    # takes priority over maximizing best-effort success on one already-rare
+    # (opening-check-only) daily fetch. A failed opening-check fetch fails
+    # loud (§3.8) and is simply retried the next opening check, not silently
+    # lost.
+    PROXY_MAX_RETRIES = 2
 
     def __init__(self, timeout: int = 15, max_retries: int = 3, retry_backoff_sec: float = 2.0):
         self.timeout = timeout
@@ -62,13 +87,14 @@ class ScrapingHttpClient:
                     ),
                 )
 
+        max_retries = self.PROXY_MAX_RETRIES if use_proxy else self.max_retries
         attempt = 0
         last_exception: Optional[Exception] = None
 
-        while attempt < self.max_retries:
+        while attempt < max_retries:
             attempt += 1
             try:
-                logger.info(f"[{regulator_id}] Fetching URL (Attempt {attempt}/{self.max_retries}): {url}")
+                logger.info(f"[{regulator_id}] Fetching URL (Attempt {attempt}/{max_retries}): {url}")
                 if use_proxy:
                     response = self.session.get(
                         SCRAPER_PROXY_BASE_URL,
@@ -81,11 +107,21 @@ class ScrapingHttpClient:
                 return response.text
             except Exception as err:
                 last_exception = err
+                if use_proxy and not _is_transient(err):
+                    # Don't burn another metered credit retrying a failure
+                    # that isn't going to resolve itself (e.g. a genuine 4xx
+                    # from the target site relayed through the proxy).
+                    logger.warning(
+                        f"[{regulator_id}] Attempt {attempt} failed for {url}: {err}. "
+                        "Not retrying (non-transient failure, proxy call -- avoiding "
+                        "wasted credit spend)."
+                    )
+                    break
                 logger.warning(
                     f"[{regulator_id}] Attempt {attempt} failed for {url}: {err}. "
                     f"Retrying in {self.retry_backoff_sec}s..."
                 )
-                if attempt < self.max_retries:
+                if attempt < max_retries:
                     time.sleep(self.retry_backoff_sec)
 
         raise AdapterFetchError(regulator_id=regulator_id, url=url, original_error=last_exception)
