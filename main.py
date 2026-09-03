@@ -4,9 +4,10 @@ Regulatory Scraper — entry point.
 Wires the Federated Source Adapters (BIR, IC, SEC) into the Shared Core's
 deterministic pipeline: Fetch -> Validate -> Detect -> Assess -> Compose -> Notify
 -> Commit State (Foundation §3.6). Assess (core/assess.py, Phase 4) calls the
-OpenAI API for AI-advisory impact assessment; if OPENAI_API_KEY is unset or
-the call fails for any reason, AI fields fall back to "UNAVAILABLE" per the
-frozen fail-open behavior (core/compose.py) rather than blocking the briefing.
+Anthropic API (Claude Haiku) for AI-advisory impact assessment; if
+ANTHROPIC_API_KEY is unset or the call fails for any reason, AI fields fall
+back to "UNAVAILABLE" per the frozen fail-open behavior (core/compose.py)
+rather than blocking the briefing.
 
 One adapter's failure is isolated from the others (§3.4 principle 3) but is never
 swallowed (§3.4 principle 2): failures are collected and re-raised after every
