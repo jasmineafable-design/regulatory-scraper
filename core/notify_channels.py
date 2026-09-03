@@ -97,11 +97,46 @@ class EmailNotificationChannel:
             logger.error(f"Failed to send email: {e}")
             raise
 
-    def send_regulatory_briefing(self, briefing: BriefingRecord) -> bool:
-        recipients = self._recipients_for(briefing.source_regulator, briefing.source_category)
-        subject = f"[Regulatory Briefing] {briefing.source_regulator}: {briefing.issuance_identifier}"
-        html_body = self._build_briefing_html(briefing)
-        return self._send(subject, html_body, recipients)
+    def send_regulatory_briefing_digest(self, briefings: List[BriefingRecord]) -> List[BriefingRecord]:
+        """Sends one table-format digest email per distinct recipient audience,
+        covering every new issuance found in this run (§3.7 still applies --
+        "send immediately whenever anything new is found on any check, opening
+        or recurring" -- this only changes *how many issuances share one email*,
+        not *when* an email goes out).
+
+        Reverted to this table-digest format (was one plain field-list email
+        per issuance) on 2026-09-03 per Jas's explicit preference for the
+        original table style. Recipients still route per (regulator, category)
+        via `_recipients_for` -- a run touching multiple audiences sends one
+        digest per audience, not one email covering everyone.
+
+        Returns the subset of `briefings` whose digest email sent successfully,
+        so the caller (NotificationDispatcher) only commits state for briefings
+        that were actually delivered.
+        """
+        if not briefings:
+            return []
+
+        groups: Dict[Tuple[str, ...], Tuple[List[str], List[BriefingRecord]]] = {}
+        for briefing in briefings:
+            recipients = self._recipients_for(briefing.source_regulator, briefing.source_category)
+            key = tuple(sorted(recipients))
+            if key not in groups:
+                groups[key] = (recipients, [])
+            groups[key][1].append(briefing)
+
+        successful: List[BriefingRecord] = []
+        for recipients, group_briefings in groups.values():
+            subject = self._digest_subject(group_briefings)
+            html_body = self._build_digest_html(group_briefings)
+            if self._send(subject, html_body, recipients):
+                successful.extend(group_briefings)
+            else:
+                logger.error(
+                    "Failed to dispatch digest covering "
+                    f"{[b.issuance_identifier for b in group_briefings]}"
+                )
+        return successful
 
     def send_daily_monitoring_report(self, run_time_info: str) -> bool:
         recipients = self.default_recipients
@@ -124,22 +159,67 @@ class EmailNotificationChannel:
             return "<em>Not available</em>"
         return value
 
-    def _build_briefing_html(self, briefing: BriefingRecord) -> str:
+    @staticmethod
+    def _digest_subject(briefings: List[BriefingRecord]) -> str:
+        regulators = sorted({b.source_regulator for b in briefings})
+        return f"[Regulatory Briefing] {', '.join(regulators)}: {len(briefings)} new issuance(s)"
+
+    def _build_digest_html(self, briefings: List[BriefingRecord]) -> str:
         f = self._field
+
+        counts: Dict[str, int] = {}
+        for b in briefings:
+            counts[b.source_category] = counts.get(b.source_category, 0) + 1
+        counts_line = " | ".join(f"{n} {cat}" for cat, n in sorted(counts.items()))
+
+        header_labels = [
+            "Issuance", "Executive Summary", "Impact to MIGI/MILI", "Impact to MIBI",
+            "Risk/Priority Level", "Suggested Action", "Archived Copy", "Official Source",
+        ]
+        header_html = "".join(
+            f'<th style="padding: 8px 12px; border: 1px solid #dfe3e6; '
+            f'background-color: #2c3e50; color: #fff; text-align: left;">{label}</th>'
+            for label in header_labels
+        )
+
+        row_html = "\n".join(
+            f"""
+                <tr>
+                    <td style="padding: 8px 12px; border: 1px solid #dfe3e6; vertical-align: top; white-space: nowrap;">
+                        <strong>{b.issuance_identifier}</strong><br/>
+                        <span style="font-size: 12px; color: #7f8c8d;">{b.source_regulator} / {b.source_category}</span>
+                    </td>
+                    <td style="padding: 8px 12px; border: 1px solid #dfe3e6; vertical-align: top;">{f(b.executive_summary)}</td>
+                    <td style="padding: 8px 12px; border: 1px solid #dfe3e6; vertical-align: top;">{f(b.insurance_entity_impact)}</td>
+                    <td style="padding: 8px 12px; border: 1px solid #dfe3e6; vertical-align: top;">{f(b.brokerage_entity_impact)}</td>
+                    <td style="padding: 8px 12px; border: 1px solid #dfe3e6; vertical-align: top; white-space: nowrap;">{f(b.risk_priority_level)}</td>
+                    <td style="padding: 8px 12px; border: 1px solid #dfe3e6; vertical-align: top;">{f(b.suggested_action)}</td>
+                    <td style="padding: 8px 12px; border: 1px solid #dfe3e6; vertical-align: top;">{f(b.archived_document_link)}</td>
+                    <td style="padding: 8px 12px; border: 1px solid #dfe3e6; vertical-align: top;">
+                        <a href="{b.official_source_link}">{b.official_source_link}</a>
+                    </td>
+                </tr>"""
+            for b in briefings
+        )
+
+        any_degraded = any(b.completeness_status != "complete" for b in briefings)
+        degraded_note = (
+            'Some items above have incomplete AI-assessed fields (marked "Not available"). '
+            if any_degraded else ""
+        )
+
         return f"""
         <html><body style="font-family: Arial, sans-serif; color: #333; line-height: 1.6;">
-            <h2 style="color: #2c3e50;">{briefing.source_regulator}: {briefing.issuance_title}</h2>
-            <p><strong>Issuance:</strong> {briefing.issuance_identifier}</p>
-            <p><strong>Executive Summary:</strong> {f(briefing.executive_summary)}</p>
-            <p><strong>Impact to MIGI/MILI:</strong> {f(briefing.insurance_entity_impact)}</p>
-            <p><strong>Impact to MIBI:</strong> {f(briefing.brokerage_entity_impact)}</p>
-            <p><strong>Risk/Priority Level:</strong> {f(briefing.risk_priority_level)}</p>
-            <p><strong>Suggested Action:</strong> {f(briefing.suggested_action)}</p>
-            <p><strong>Archived Copy:</strong> {f(briefing.archived_document_link)}</p>
-            <p><strong>Official Source:</strong> <a href="{briefing.official_source_link}">{briefing.official_source_link}</a></p>
+            <h2 style="color: #2c3e50;">New Regulatory Updates</h2>
+            <p style="background-color: #f7f9fa; padding: 8px 12px; border-radius: 4px; display: inline-block;">
+                New this check: {counts_line} | <strong>{len(briefings)} total</strong>
+            </p>
+            <table style="border-collapse: collapse; width: 100%; max-width: 900px;">
+                <tr>{header_html}</tr>
+                {row_html}
+            </table>
             <p style="font-size: 12px; color: #7f8c8d;">
-                Completeness: {briefing.completeness_status}. This is an automated
-                notification from the Regulatory Scraper.
+                {degraded_note}This is an automated notification from the Regulatory Scraper.
             </p>
         </body></html>
         """
