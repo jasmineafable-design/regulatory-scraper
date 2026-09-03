@@ -26,7 +26,7 @@ from models.issuance import CandidateIssuance
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_MODEL = "gpt-4o-mini"
+DEFAULT_MODEL = "claude-haiku-4-5-20251001"
 
 # Bootstrap default, used only when the Sheet's BusinessContext tab is empty
 # or unreachable (§3.2 requires this to be non-technical-user-editable
@@ -123,7 +123,12 @@ class AssessmentResult:
 
 
 class Assessor:
-    """AI-advisory impact assessment via the OpenAI API (Phase 4).
+    """AI-advisory impact assessment via the Anthropic API (Phase 4).
+
+    Uses Claude Haiku by default -- cheap enough (~$0.0016/call at this
+    prompt's size) that a one-time $5 credit grant covers a very long runway
+    at this system's volume. Switched from Groq/OpenAI to Anthropic on
+    2026-09-03 per Jas's preference for Claude's summary quality.
 
     Reads Business Context Configuration from the Sheet (§3.2/§3.5) via the
     injected SheetsConfigReader, falling back to DEFAULT_BUSINESS_CONTEXT when
@@ -134,15 +139,15 @@ class Assessor:
     def __init__(self, config_reader=None, model: str = DEFAULT_MODEL):
         self.config_reader = config_reader
         self.model = model
-        self.api_key = os.getenv("OPENAI_API_KEY", "")
+        self.api_key = os.getenv("ANTHROPIC_API_KEY", "")
         self._client = None
 
     def _get_client(self):
         if self._client is None:
-            from openai import OpenAI  # imported lazily: optional dependency,
-            # and keeps import-time failures from blocking the whole pipeline
-            # if the package somehow isn't installed in some environment.
-            self._client = OpenAI(api_key=self.api_key)
+            from anthropic import Anthropic  # imported lazily: optional
+            # dependency, and keeps import-time failures from blocking the
+            # whole pipeline if the package somehow isn't installed.
+            self._client = Anthropic(api_key=self.api_key)
         return self._client
 
     def _business_context_text(self) -> str:
@@ -167,7 +172,7 @@ class Assessor:
         """Never raises (see module docstring) -- always returns an
         AssessmentResult, succeeded=False with .error set on any failure."""
         if not self.api_key:
-            return AssessmentResult(succeeded=False, error="OPENAI_API_KEY not configured.")
+            return AssessmentResult(succeeded=False, error="ANTHROPIC_API_KEY not configured.")
 
         try:
             client = self._get_client()
@@ -180,16 +185,23 @@ class Assessor:
                 f"Identifier: {candidate.issuance_identifier}\n"
                 f"Title: {candidate.issuance_title}"
             )
-            response = client.chat.completions.create(
+            response = client.messages.create(
                 model=self.model,
-                messages=[
-                    {"role": "system", "content": _SYSTEM_PROMPT},
-                    {"role": "user", "content": user_prompt},
-                ],
+                max_tokens=1024,
                 temperature=0.2,
-                response_format={"type": "json_object"},
+                system=_SYSTEM_PROMPT,
+                messages=[{"role": "user", "content": user_prompt}],
             )
-            raw = response.choices[0].message.content
+            raw = response.content[0].text.strip()
+            # Claude has no dedicated JSON-mode flag (unlike OpenAI's
+            # response_format={"type": "json_object"}); the system prompt asks
+            # for bare JSON, but strip markdown fences defensively in case a
+            # model ever wraps the object in ```json ... ``` anyway.
+            if raw.startswith("```"):
+                raw = raw.strip("`")
+                if raw.startswith("json"):
+                    raw = raw[4:]
+                raw = raw.strip()
             data = json.loads(raw)
 
             return AssessmentResult(
