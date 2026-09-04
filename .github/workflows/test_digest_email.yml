@@ -1,0 +1,84 @@
+# Manual, on-demand test: prove that a regulatory briefing digest covering
+# BIR, IC and SEC actually reaches your inbox.
+#
+# Deliberately a SEPARATE workflow from compliance_monitor.yml, for two
+# reasons:
+#   1. It has NO cache restore/save steps, so it cannot read or overwrite the
+#      real state/seen_issuances.json that production runs depend on. The test
+#      writes to its own throwaway state file inside the runner, which is
+#      discarded when the job ends.
+#   2. It never runs on a schedule -- only when you click "Run workflow".
+#
+# COST WARNING: unlike a local run, IC and SEC here are behind ScraperAPI
+# (GitHub's IP ranges are blocked by both sites). The test fetches twice --
+# once to baseline, once to run the real pipeline -- so a full BIR,IC,SEC run
+# costs roughly 14 ScraperAPI credits. BIR is free (direct API). Use the
+# 'regulators' input to narrow it if you want to spend less.
+
+name: TEST — Digest Email Delivery
+
+on:
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'Preview only — print the digest in the log, send no email'
+        type: boolean
+        default: true
+      regulators:
+        description: 'Which regulators to test (comma-separated)'
+        type: choice
+        default: 'BIR,IC,SEC'
+        options:
+          - 'BIR,IC,SEC'
+          - 'BIR'
+          - 'IC,SEC'
+          - 'IC'
+          - 'SEC'
+      replay:
+        description: 'How many recent issuances per category to re-detect as new'
+        type: string
+        default: '2'
+
+jobs:
+  test-digest-email:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      # No actions/cache steps here -- see the header comment. Real issuance
+      # state is neither read nor written by this job.
+
+      - name: Run digest delivery test
+        env:
+          SMTP_SENDER_EMAIL: ${{ secrets.SMTP_SENDER_EMAIL }}
+          SMTP_SENDER_PASSWORD: ${{ secrets.SMTP_SENDER_PASSWORD }}
+          NOTIFICATION_RECIPIENTS: ${{ secrets.NOTIFICATION_RECIPIENTS }}
+          GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
+          SHEET_ID: ${{ secrets.SHEET_ID }}
+          SCRAPER_PROXY_API_KEY: ${{ secrets.SCRAPER_PROXY_API_KEY }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: |
+          # --allow-proxy is required here: the script defaults to refusing
+          # ScraperAPI so that a local run can't silently spend credits, but
+          # on a GitHub runner IC and SEC are unreachable without it.
+          ARGS="--allow-proxy --regulators ${{ inputs.regulators }} --replay ${{ inputs.replay }}"
+          if [ "${{ inputs.dry_run }}" = "true" ]; then
+            echo "DRY RUN — the digest will be printed below, not emailed."
+            ARGS="$ARGS --dry-run"
+          else
+            echo "LIVE RUN — a digest email will be sent."
+          fi
+          python tools/test_digest_email.py $ARGS
