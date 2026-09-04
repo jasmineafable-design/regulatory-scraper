@@ -178,6 +178,23 @@ class EmailNotificationChannel:
         # BriefingRecord field names are unchanged -- insurance_entity_impact
         # is still MIGI/MILI (the underwriters) and brokerage_entity_impact is
         # still MIBI (the brokerage); only the display label differs.
+        # Explicit widths, 2026-09-04 per Jas ("columns are not equally
+        # distributed... long paragraphs like impact have small column").
+        #
+        # First attempt used a <colgroup>/<col> to set these -- that's
+        # ignored by Gmail and most other webmail clients (a well-known HTML
+        # email limitation, colgroup support is inconsistent), so it silently
+        # fell back to auto-sizing by content and every column ended up
+        # roughly the same width regardless of what was declared. Fixed by
+        # putting the width directly on each <th>/<td> instead, which is the
+        # standard, broadly-supported technique for HTML email tables. Also
+        # set as both a `width` HTML attribute and an inline style -- older
+        # Outlook builds honor the attribute more reliably than the CSS.
+        # These widths add up to 100% and deliberately favor the paragraph
+        # columns (Executive Summary, the two Impact columns, Suggested
+        # Action) over the short ones (Issuance, Risk, Archived Copy).
+        COLUMN_WIDTHS = [10, 20, 15, 15, 8, 17, 7, 8]  # must sum to 100
+
         header_labels = [
             "Issuance", "Executive Summary", "Impact to Underwriting Entities",
             "Impact to Broker Entity", "Risk/Priority Level", "Suggested Action",
@@ -187,26 +204,27 @@ class EmailNotificationChannel:
         # left-aligned -- centring paragraph-length summaries makes them much
         # harder to read.
         header_html = "".join(
-            f'<th style="padding: 8px 12px; border: 1px solid #dfe3e6; '
+            f'<th width="{w}%" style="width: {w}%; padding: 8px 12px; border: 1px solid #dfe3e6; '
             f'background-color: #2c3e50; color: #fff; text-align: center;">{label}</th>'
-            for label in header_labels
+            for label, w in zip(header_labels, COLUMN_WIDTHS)
         )
+        w_issuance, w_summary, w_underwriting, w_broker, w_risk, w_action, w_archive, w_source = COLUMN_WIDTHS
 
         row_html = "\n".join(
             f"""
                 <tr>
-                    <td style="padding: 8px 12px; border: 1px solid #dfe3e6; vertical-align: top; white-space: nowrap;">
+                    <td width="{w_issuance}%" style="width: {w_issuance}%; padding: 8px 12px; border: 1px solid #dfe3e6; vertical-align: top; word-break: break-word;">
                         <strong>{b.issuance_identifier}</strong><br/>
                         <span style="font-size: 12px; color: #7f8c8d;">{b.source_regulator} / {b.source_category}</span>
                     </td>
-                    <td style="padding: 8px 12px; border: 1px solid #dfe3e6; vertical-align: top;">{f(b.executive_summary)}</td>
-                    <td style="padding: 8px 12px; border: 1px solid #dfe3e6; vertical-align: top;">{f(b.insurance_entity_impact)}</td>
-                    <td style="padding: 8px 12px; border: 1px solid #dfe3e6; vertical-align: top;">{f(b.brokerage_entity_impact)}</td>
-                    <td style="padding: 8px 12px; border: 1px solid #dfe3e6; vertical-align: top; white-space: nowrap;">{f(b.risk_priority_level)}</td>
-                    <td style="padding: 8px 12px; border: 1px solid #dfe3e6; vertical-align: top;">{f(b.suggested_action)}</td>
-                    <td style="padding: 8px 12px; border: 1px solid #dfe3e6; vertical-align: top;">{f(b.archived_document_link)}</td>
-                    <td style="padding: 8px 12px; border: 1px solid #dfe3e6; vertical-align: top;">
-                        <a href="{b.official_source_link}">{b.official_source_link}</a>
+                    <td width="{w_summary}%" style="width: {w_summary}%; padding: 8px 12px; border: 1px solid #dfe3e6; vertical-align: top;">{f(b.executive_summary)}</td>
+                    <td width="{w_underwriting}%" style="width: {w_underwriting}%; padding: 8px 12px; border: 1px solid #dfe3e6; vertical-align: top;">{f(b.insurance_entity_impact)}</td>
+                    <td width="{w_broker}%" style="width: {w_broker}%; padding: 8px 12px; border: 1px solid #dfe3e6; vertical-align: top;">{f(b.brokerage_entity_impact)}</td>
+                    <td width="{w_risk}%" style="width: {w_risk}%; padding: 8px 12px; border: 1px solid #dfe3e6; vertical-align: top;">{f(b.risk_priority_level)}</td>
+                    <td width="{w_action}%" style="width: {w_action}%; padding: 8px 12px; border: 1px solid #dfe3e6; vertical-align: top;">{f(b.suggested_action)}</td>
+                    <td width="{w_archive}%" style="width: {w_archive}%; padding: 8px 12px; border: 1px solid #dfe3e6; vertical-align: top;">{f(b.archived_document_link)}</td>
+                    <td width="{w_source}%" style="width: {w_source}%; padding: 8px 12px; border: 1px solid #dfe3e6; vertical-align: top; word-break: break-all;">
+                        <a href="{b.official_source_link}">View source</a>
                     </td>
                 </tr>"""
             for b in briefings
@@ -224,7 +242,7 @@ class EmailNotificationChannel:
             <p style="background-color: #f7f9fa; padding: 8px 12px; border-radius: 4px; display: inline-block;">
                 New this check: {counts_line} | <strong>{len(briefings)} total</strong>
             </p>
-            <table style="border-collapse: collapse; width: 100%; max-width: 900px;">
+            <table style="border-collapse: collapse; width: 100%; max-width: 900px; table-layout: fixed;">
                 <tr>{header_html}</tr>
                 {row_html}
             </table>
