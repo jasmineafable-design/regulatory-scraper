@@ -1,0 +1,61 @@
+# One-time (or occasional) helper: download GitHub's current "already seen"
+# memory file, so you can seed tools/run_ic_sec_local.py's local memory file
+# with it before its first real run.
+#
+# Why this matters: without doing this once, your PC's local memory starts
+# empty, and it won't match what GitHub already knows. Depending on the
+# category, that either makes the first local run silently mark today's real
+# backlog as "already known" without ever emailing you about it (Foundation
+# §13's baseline-exclusion rule, applied against a memory file that doesn't
+# actually know what GitHub knows), or floods you with things you've already
+# seen. Run this once, download the file, done.
+#
+# Read-only: only restores the cache, never saves/overwrites it. Cannot
+# affect the real scraper's memory in any way.
+
+name: Export Current State (download only)
+
+on:
+  workflow_dispatch:
+
+jobs:
+  export:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Restore persistence state (read-only)
+        uses: actions/cache/restore@v4
+        with:
+          path: state/seen_issuances.json
+          key: regulatory-state-${{ github.run_id }}
+          restore-keys: |
+            regulatory-state-
+
+      - name: Check the file actually exists
+        id: check
+        run: |
+          mkdir -p state
+          if [ -f state/seen_issuances.json ]; then
+            echo "found=true" >> "$GITHUB_OUTPUT"
+            echo "File found. $(wc -l < state/seen_issuances.json) lines."
+          else
+            echo "found=false" >> "$GITHUB_OUTPUT"
+            echo "No cached state file found -- this project has never completed a real run yet."
+            echo "That's fine: just start tools/run_ic_sec_local.py with an empty/no --state-file yet."
+            echo "{}" > state/seen_issuances.json
+          fi
+
+      - name: Upload as a downloadable file
+        uses: actions/upload-artifact@v4
+        with:
+          name: seen_issuances_export
+          path: state/seen_issuances.json
+          retention-days: 1
+
+      - name: How to use this
+        run: |
+          echo "Download the 'seen_issuances_export' artifact from this run's summary page"
+          echo "(scroll down after the run finishes), then save the file inside it as:"
+          echo "    state/ic_sec_local_seen_issuances.json"
+          echo "in your local copy of this repo, before running tools/run_ic_sec_local.py"
+          echo "for the first time."
