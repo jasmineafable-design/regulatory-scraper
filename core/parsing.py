@@ -1,6 +1,6 @@
 import re
 from typing import Optional
-from urllib.parse import urljoin
+from urllib.parse import urljoin, urlparse
 from bs4 import BeautifulSoup
 
 
@@ -17,6 +17,24 @@ def make_absolute_url(base_url: str, relative_or_absolute_url: str) -> str:
     if not relative_or_absolute_url:
         return ""
     return urljoin(base_url, relative_or_absolute_url.strip())
+
+
+def fallback_identifier(title: str, href: str = "", max_title_chars: int = 40) -> str:
+    """Builds a *unique* identifier for an issuance whose title contains no
+    parseable issuance number.
+
+    A bare title truncation is not safe as a state key: regulator titles
+    routinely share a long common prefix ("Notice to All Insurance Companies
+    Regarding ..."), so two distinct issuances collapse to the same
+    identifier and the second is silently swallowed as already-seen.
+    Appending the URL's last path segment disambiguates them, since each
+    issuance has its own page.
+    """
+    stem = clean_text(title)[:max_title_chars].strip()
+    slug = ""
+    if href:
+        slug = urlparse(href.strip()).path.rstrip("/").rsplit("/", 1)[-1]
+    return f"{stem} [{slug}]" if slug else stem
 
 
 def extract_html_text(html_content: str) -> str:
