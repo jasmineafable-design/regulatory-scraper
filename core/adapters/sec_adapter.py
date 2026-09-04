@@ -9,7 +9,7 @@ from bs4 import BeautifulSoup
 from core.adapters.base_adapter import BaseAdapter
 from core.exceptions import ParsingError
 from core.http_client import ScrapingHttpClient
-from core.parsing import clean_text, make_absolute_url
+from core.parsing import clean_text, fallback_identifier, make_absolute_url
 from models.issuance import CandidateIssuance
 
 logger = logging.getLogger(__name__)
@@ -79,21 +79,34 @@ class SECAdapter(BaseAdapter):
         return "SEC"
 
     def validate(self, html_content: str) -> bool:
+        """True only if the page actually looks like a SEC listing.
+
+        Previously this returned True for any page containing at least one
+        link -- i.e. essentially every error page, proxy block page and CDN
+        interstitial -- so a failed fetch that still returned HTML passed
+        validation and then parsed to zero candidates, reported as "no new
+        issuances" rather than as a failure.
+        """
         if not html_content or not html_content.strip():
             return False
         soup = BeautifulSoup(html_content, "html.parser")
-        return bool(soup.find_all("a", href=True))
+        headings = soup.find_all("h2", class_="entry-title") or soup.find_all("h2")
+        return any(heading.find("a", href=True) for heading in headings)
 
-    def _extract_identifier(self, bold_text: str, fallback_title: str) -> str:
+    def _extract_identifier(self, bold_text: str, fallback_title: str, href: str = "") -> str:
         bold_text = clean_text(bold_text)
         if bold_text:
             return bold_text
         # Fallback if the <b> identifier tag isn't present for some entry --
         # take the leading "SEC ... No. ..." / docket-style prefix if we can
-        # find one, otherwise a truncated title so we still get *something*
-        # stable-ish rather than dropping the item entirely.
+        # find one, otherwise a title stem qualified by the URL slug. A bare
+        # truncation collided for items sharing their first 40 characters and,
+        # because state dedupes on the identifier alone, silently dropped the
+        # second one.
         match = re.match(r"^(SEC[^.:]*\d[\d-]*)", fallback_title, re.IGNORECASE)
-        return match.group(1).strip() if match else fallback_title[:40].strip()
+        if match:
+            return match.group(1).strip()
+        return fallback_identifier(fallback_title, href)
 
     def parse(self, html_content: str) -> List[CandidateIssuance]:
         soup = BeautifulSoup(html_content, "html.parser")
@@ -119,7 +132,7 @@ class SECAdapter(BaseAdapter):
             if not title_text:
                 title_text = full_text
 
-            identifier = self._extract_identifier(bold_text, full_text)
+            identifier = self._extract_identifier(bold_text, full_text, anchor["href"])
             if not identifier or not full_text:
                 continue
 
@@ -152,5 +165,19 @@ class SECAdapter(BaseAdapter):
             )
 
         candidates = self.parse(html_content)
-        logger.info(f"[{self.regulator_id}] Extracted {len(candidates)} candidate issuance(s).")
+        if not candidates:
+            # See the matching note in ic_adapter: warn, don't raise. A SEC
+            # category page early in the year (e.g. decision-{year} in
+            # January) can legitimately be empty, and failing the workflow
+            # daily over that would be worse than a warning.
+            logger.warning(
+                f"[{self.regulator_id}/{self.category}] Page validated as a listing but "
+                f"0 candidates were extracted from {self.target_url}. If this category is "
+                "not genuinely empty, SEC's markup has drifted from the "
+                "h2.entry-title structure parse() expects."
+            )
+        else:
+            logger.info(
+                f"[{self.regulator_id}/{self.category}] Extracted {len(candidates)} candidate issuance(s)."
+            )
         return candidates

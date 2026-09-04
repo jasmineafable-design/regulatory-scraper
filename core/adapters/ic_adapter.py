@@ -8,7 +8,7 @@ from bs4 import BeautifulSoup
 from core.adapters.base_adapter import BaseAdapter
 from core.exceptions import ParsingError
 from core.http_client import ScrapingHttpClient
-from core.parsing import clean_text, make_absolute_url
+from core.parsing import clean_text, fallback_identifier as _fallback_identifier, make_absolute_url
 from models.issuance import CandidateIssuance
 
 logger = logging.getLogger(__name__)
@@ -87,20 +87,44 @@ class ICAdapter(BaseAdapter):
     def regulator_id(self) -> str:
         return "IC"
 
+    # Structures that actually indicate an IC listing page (see class
+    # docstring). Used by both validate() and _find_item_anchors so the two
+    # can't disagree about what counts as a listing.
+    _ITEM_SELECTORS = ("article h2.entry-title a[href]", "span.premium-blog-entry-title a[href]")
+
     def validate(self, html_content: str) -> bool:
+        """True only if the page actually looks like an IC listing.
+
+        Previously this accepted any page containing *a single link*, which
+        every error page, proxy block page and CDN interstitial on the
+        internet satisfies -- so a 503 page sailed through validation and got
+        parsed (see the fallback note in _find_item_anchors).
+        """
         if not html_content or not html_content.strip():
             return False
         soup = BeautifulSoup(html_content, "html.parser")
-        return bool(soup.find("article")) or bool(soup.find("a", href=True))
+        if any(soup.select(selector) for selector in self._ITEM_SELECTORS):
+            return True
+        # Some IC templates wrap items in <article> without an entry-title;
+        # accept that only if the article actually carries a link.
+        return any(article.find("a", href=True) for article in soup.find_all("article"))
 
-    def _extract_identifier(self, title: str) -> str:
+    def _extract_identifier(self, title: str, href: str = "") -> str:
         docket_match = self._DOCKET_IDENTIFIER_RE.search(title)
         if docket_match:
             return clean_text(docket_match.group(1))
 
         match = self._IDENTIFIER_RE.search(title)
         if not match:
-            return title[:40].strip()
+            # No parseable issuance number. The old behaviour -- a bare
+            # title[:40] -- silently collided whenever two items shared their
+            # first 40 characters, which is common for IC's long
+            # "Notice to All Insurance Companies Regarding ..." titles. Since
+            # state dedupes on this identifier alone, the second item was
+            # treated as already-seen and never notified. Appending the URL
+            # slug keeps it unique. Well-formed identifiers (the paths above)
+            # are untouched, so existing state stays valid.
+            return _fallback_identifier(title, href)
 
         raw_match = match.group(1)
         number_match = re.search(r"\d+[-–]\d+", raw_match)
@@ -113,13 +137,12 @@ class ICAdapter(BaseAdapter):
         """Finds one anchor per listed item, trying each known IC page
         template in order (see class docstring) before falling back to
         "every link on the page" as a last resort."""
-        selectors = ["article h2.entry-title a[href]", "span.premium-blog-entry-title a[href]"]
-        for selector in selectors:
+        for selector in self._ITEM_SELECTORS:
             found = soup.select(selector)
             if found:
                 return found
 
-        # Fallback 1: one anchor per <article>, however it's laid out inside.
+        # Fallback: one anchor per <article>, however it's laid out inside.
         articles = soup.find_all("article")
         if articles:
             anchors = []
@@ -131,10 +154,18 @@ class ICAdapter(BaseAdapter):
             if anchors:
                 return anchors
 
-        # Fallback 2: no recognizable per-item structure at all -- every link
-        # on the page. Noisier (may include nav/footer links), but better
-        # than silently returning nothing if IC's markup changes again.
-        return soup.find_all("a", href=True)
+        # There used to be a second fallback here returning EVERY <a href> on
+        # the page, on the reasoning that noise beats silence if IC's markup
+        # changes. In practice it was worse than silence: combined with the
+        # old permissive validate(), an IC error/block page (which has links
+        # but no listing) parsed cleanly into ~5 "issuances" named "Home",
+        # "About Us", "Contact", "Privacy Policy", "Facebook". On a
+        # first-ever run those get written into state as BASELINE records,
+        # permanently polluting it; on later runs they'd be emailed to
+        # recipients as regulatory issuances. Returning nothing here lets
+        # fetch_latest_issuances raise ParsingError instead, which fails loud
+        # (§3.8) and is diagnosable.
+        return []
 
     def parse(self, html_content: str) -> List[CandidateIssuance]:
         soup = BeautifulSoup(html_content, "html.parser")
@@ -150,7 +181,7 @@ class ICAdapter(BaseAdapter):
                 CandidateIssuance(
                     source_regulator=self.regulator_id,
                     source_category=self.category,
-                    issuance_identifier=self._extract_identifier(title_text),
+                    issuance_identifier=self._extract_identifier(title_text, href),
                     issuance_title=title_text,
                     source_url=make_absolute_url(self.target_url, href),
                     raw_content_reference=str(anchor),
@@ -180,5 +211,21 @@ class ICAdapter(BaseAdapter):
             )
 
         candidates = self.parse(html_content)
-        logger.info(f"[{self.regulator_id}] Extracted {len(candidates)} candidate issuance(s).")
+        if not candidates:
+            # The page validated as a listing but yielded nothing. That's
+            # either a genuinely empty category or a markup drift, and the two
+            # are indistinguishable from here -- so warn loudly rather than
+            # raise (a real empty category must not fail the whole workflow
+            # every day) and rather than log at INFO (which reads as a normal
+            # "no updates" result).
+            logger.warning(
+                f"[{self.regulator_id}/{self.category}] Page validated as a listing but "
+                f"0 candidates were extracted from {self.target_url}. If this category is "
+                "not genuinely empty, IC's markup has drifted and the selectors in "
+                "_ITEM_SELECTORS need rechecking."
+            )
+        else:
+            logger.info(
+                f"[{self.regulator_id}/{self.category}] Extracted {len(candidates)} candidate issuance(s)."
+            )
         return candidates
