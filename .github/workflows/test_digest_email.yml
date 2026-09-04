@@ -61,6 +61,40 @@ jobs:
       # No actions/cache steps here -- see the header comment. Real issuance
       # state is neither read nor written by this job.
 
+      # Diagnostic for the 2026-09-04 "Connection error." on every AI
+      # assessment. Separates the three possible causes in one shot:
+      #   HTTP 200         -> reachable and the key works
+      #   HTTP 401/400     -> reachable; it's a key/credit problem
+      #   no HTTP code     -> the runner genuinely cannot reach the API
+      # Never prints the key itself, and never fails the job.
+      - name: Check Anthropic API reachability
+        continue-on-error: true
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: |
+          echo "DNS resolution:"
+          getent hosts api.anthropic.com || echo "  FAILED to resolve api.anthropic.com"
+
+          echo "Minimal API call (1 token, negligible cost):"
+          CODE=$(curl -sS -o /tmp/anthropic_probe.txt -w '%{http_code}' \
+            --max-time 30 \
+            -X POST https://api.anthropic.com/v1/messages \
+            -H "x-api-key: $ANTHROPIC_API_KEY" \
+            -H "anthropic-version: 2023-06-01" \
+            -H "content-type: application/json" \
+            -d '{"model":"claude-haiku-4-5-20251001","max_tokens":1,"messages":[{"role":"user","content":"hi"}]}' \
+            2>/tmp/anthropic_err.txt) || true
+
+          if [ -z "$CODE" ] || [ "$CODE" = "000" ]; then
+            echo "  NO RESPONSE -- the runner cannot reach api.anthropic.com."
+            echo "  curl said:"; sed 's/^/    /' /tmp/anthropic_err.txt
+          else
+            echo "  HTTP $CODE"
+            # Response body is safe to show: it contains no key, and on an
+            # error it names the exact problem (credit, auth, model).
+            head -c 800 /tmp/anthropic_probe.txt | sed 's/^/    /'
+          fi
+
       - name: Run digest delivery test
         env:
           SMTP_SENDER_EMAIL: ${{ secrets.SMTP_SENDER_EMAIL }}
