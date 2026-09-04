@@ -242,7 +242,7 @@ class EmailNotificationChannel:
             <p style="background-color: #f7f9fa; padding: 8px 12px; border-radius: 4px; display: inline-block;">
                 New this check: {counts_line} | <strong>{len(briefings)} total</strong>
             </p>
-            <table style="border-collapse: collapse; width: 100%; max-width: 900px; table-layout: fixed;">
+            <table style="border-collapse: collapse; width: 100%; table-layout: fixed;">
                 <tr>{header_html}</tr>
                 {row_html}
             </table>
