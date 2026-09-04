@@ -111,6 +111,29 @@ Respond with ONLY a JSON object (no markdown fences, no commentary) with exactly
 Never fabricate specifics (dates, amounts, section numbers) not evidenced by the issuance title/content given to you -- if the title alone is insufficient to say something specific, keep the summary general rather than inventing detail."""
 
 
+def _describe_exception(err: BaseException, max_depth: int = 4) -> str:
+    """Renders an exception together with its underlying cause chain.
+
+    Anthropic's APIConnectionError carries the useless literal message
+    "Connection error." -- the actual reason (DNS failure, TLS handshake
+    error, connect timeout, connection refused) lives in __cause__, which
+    str(err) discards. That cost a whole diagnostic round-trip on 2026-09-04,
+    so failures now report the chain: "APIConnectionError: Connection error.
+    <- ConnectTimeout: timed out".
+    """
+    parts = []
+    seen = set()
+    current: Optional[BaseException] = err
+    depth = 0
+    while current is not None and depth < max_depth and id(current) not in seen:
+        seen.add(id(current))
+        text = str(current).strip() or "(no message)"
+        parts.append(f"{type(current).__name__}: {text}")
+        current = current.__cause__ or current.__context__
+        depth += 1
+    return " <- ".join(parts)
+
+
 @dataclass
 class AssessmentResult:
     succeeded: bool
@@ -142,12 +165,32 @@ class Assessor:
         self.api_key = os.getenv("ANTHROPIC_API_KEY", "")
         self._client = None
 
+    # The SDK's default connect timeout is 5s with 2 retries. On a GitHub
+    # Actions runner that proved too tight -- every assessment in the
+    # 2026-09-04 run failed with a bare "Connection error." Widening the
+    # connect window and allowing more retries costs nothing when the API is
+    # reachable (the read timeout, which governs the actual generation, is
+    # unchanged) and removes the most likely cause.
+    CONNECT_TIMEOUT_SEC = 20.0
+    READ_TIMEOUT_SEC = 120.0
+    MAX_RETRIES = 4
+
     def _get_client(self):
         if self._client is None:
+            import httpx
             from anthropic import Anthropic  # imported lazily: optional
             # dependency, and keeps import-time failures from blocking the
             # whole pipeline if the package somehow isn't installed.
-            self._client = Anthropic(api_key=self.api_key)
+            self._client = Anthropic(
+                api_key=self.api_key,
+                max_retries=self.MAX_RETRIES,
+                timeout=httpx.Timeout(
+                    connect=self.CONNECT_TIMEOUT_SEC,
+                    read=self.READ_TIMEOUT_SEC,
+                    write=self.READ_TIMEOUT_SEC,
+                    pool=self.READ_TIMEOUT_SEC,
+                ),
+            )
         return self._client
 
     def _business_context_text(self) -> str:
@@ -216,6 +259,7 @@ class Assessor:
             # Fail-open per the frozen AI/best-effort decision (§3.8, Handoff
             # §"Approved AI/best-effort failure decision"): never let an AI
             # failure block or delay the deterministic briefing.
+            detail = _describe_exception(e)
             logger.error(f"[{candidate.source_regulator}] AI assessment failed for "
-                         f"{candidate.issuance_identifier}: {e}")
-            return AssessmentResult(succeeded=False, error=str(e))
+                         f"{candidate.issuance_identifier}: {detail}")
+            return AssessmentResult(succeeded=False, error=detail)

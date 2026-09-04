@@ -172,13 +172,23 @@ class EmailNotificationChannel:
             counts[b.source_category] = counts.get(b.source_category, 0) + 1
         counts_line = " | ".join(f"{n} {cat}" for cat, n in sorted(counts.items()))
 
+        # Column labels renamed 2026-09-04 per Jas: entity codes (MIGI/MILI/
+        # MIBI) replaced with plain-language roles, so recipients who don't
+        # know the internal abbreviations can read the digest. The underlying
+        # BriefingRecord field names are unchanged -- insurance_entity_impact
+        # is still MIGI/MILI (the underwriters) and brokerage_entity_impact is
+        # still MIBI (the brokerage); only the display label differs.
         header_labels = [
-            "Issuance", "Executive Summary", "Impact to MIGI/MILI", "Impact to MIBI",
-            "Risk/Priority Level", "Suggested Action", "Archived Copy", "Official Source",
+            "Issuance", "Executive Summary", "Impact to Underwriting Entities",
+            "Impact to Broker Entity", "Risk/Priority Level", "Suggested Action",
+            "Archived Copy", "Official Source",
         ]
+        # text-align: center on headers per Jas, 2026-09-04. Body cells stay
+        # left-aligned -- centring paragraph-length summaries makes them much
+        # harder to read.
         header_html = "".join(
             f'<th style="padding: 8px 12px; border: 1px solid #dfe3e6; '
-            f'background-color: #2c3e50; color: #fff; text-align: left;">{label}</th>'
+            f'background-color: #2c3e50; color: #fff; text-align: center;">{label}</th>'
             for label in header_labels
         )
 
