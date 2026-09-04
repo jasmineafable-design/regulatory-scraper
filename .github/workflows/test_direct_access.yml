@@ -1,0 +1,93 @@
+# Diagnostic only. Answers one question: do insurance.gov.ph and sec.gov.ph
+# still block requests coming from GitHub Actions' IP ranges?
+#
+# That block is the ONLY reason this project pays for a scraping proxy. It was
+# confirmed months ago, but sites change their WAF rules, and re-testing costs
+# nothing: every request here is a plain direct request. No ScraperAPI, no
+# credits, no API keys, no state read or written, nothing emailed.
+#
+# Also checks, at no extra cost:
+#   - Both candidate URLs for IC Circular Letters. The adapter uses
+#     /category/circular-letters/; Jas reported /circular-letters/. Only one
+#     is likely to be right.
+#   - Whether the block (if any) is IP-based or User-Agent-based, by sending
+#     each request twice: once with a browser UA, once with curl's default.
+#   - IC's WordPress REST API and RSS feed. IC runs WordPress, so these may
+#     expose the same listings in a structured form that's far more stable to
+#     parse than scraped HTML -- and they may not be behind the same rule.
+#
+# Read the summary table at the end of the log.
+
+name: TEST — Direct Access (no proxy, no cost)
+
+on:
+  workflow_dispatch:
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Probe IC and SEC directly
+        run: |
+          UA="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
+          YEAR=$(date +%Y)
+
+          URLS="
+          https://www.insurance.gov.ph/category/circular-letters/
+          https://www.insurance.gov.ph/circular-letters/
+          https://www.insurance.gov.ph/advisories/
+          https://www.insurance.gov.ph/memoranda/
+          https://www.sec.gov.ph/mc-${YEAR}/
+          https://www.sec.gov.ph/category/resolution-${YEAR}/
+          https://www.sec.gov.ph/category/opinion-${YEAR}/
+          https://www.sec.gov.ph/category/decision-${YEAR}/
+          https://www.insurance.gov.ph/wp-json/wp/v2/posts?per_page=3
+          https://www.insurance.gov.ph/feed/
+          "
+
+          echo "Runner public IP: $(curl -s --max-time 10 https://api.ipify.org || echo unknown)"
+          echo ""
+          printf '%-62s %-8s %-8s %-9s %s\n' "URL" "BROWSER" "NO-UA" "BYTES" "LOOKS LIKE A LISTING?"
+          printf '%s\n' "--------------------------------------------------------------------------------------------------------"
+
+          for URL in $URLS; do
+            # Truncate first: on a total connection failure curl writes no
+            # file at all, and a stale/absent body would misreport the size.
+            : > /tmp/body.html
+            : > /tmp/err_ua.txt
+
+            # With a browser User-Agent (what the real scraper sends).
+            CODE_UA=$(curl -sS -o /tmp/body.html -w '%{http_code}' --max-time 45 \
+              -H "User-Agent: $UA" \
+              -H "Accept: text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8" \
+              "$URL" 2>/tmp/err_ua.txt) || CODE_UA="none"
+            BYTES=$(wc -c < /tmp/body.html 2>/dev/null | tr -d ' ')
+            BYTES=${BYTES:-0}
+
+            # Without one, to tell a UA-based block from an IP-based one.
+            CODE_RAW=$(curl -sS -o /dev/null -w '%{http_code}' --max-time 45 "$URL" 2>/dev/null) || CODE_RAW="none"
+
+            # Do the markers the adapters actually rely on appear?
+            HINTS=""
+            grep -qi 'entry-title' /tmp/body.html 2>/dev/null && HINTS="${HINTS}entry-title "
+            grep -qi 'premium-blog-entry-title' /tmp/body.html 2>/dev/null && HINTS="${HINTS}premium-blog "
+            grep -qi 'circular\|advisory\|memorandum\|resolution\|opinion\|decision' /tmp/body.html 2>/dev/null && HINTS="${HINTS}issuance-words "
+            grep -qi '"title"' /tmp/body.html 2>/dev/null && HINTS="${HINTS}json-titles "
+            grep -qi '<item>' /tmp/body.html 2>/dev/null && HINTS="${HINTS}rss-items "
+            [ -z "$HINTS" ] && HINTS="-"
+
+            printf '%-62s %-8s %-8s %-9s %s\n' "${URL#https://www.}" "$CODE_UA" "$CODE_RAW" "$BYTES" "$HINTS"
+
+            if [ "$CODE_UA" = "none" ]; then
+              echo "        curl error: $(tr -d '\n' < /tmp/err_ua.txt | head -c 200)"
+            fi
+          done
+
+          echo ""
+          echo "HOW TO READ THIS"
+          echo "  200 in the BROWSER column  = reachable from GitHub. No proxy needed for that URL."
+          echo "  403 / 503                  = actively blocked (a WAF answered)."
+          echo "  none                       = no response at all; network-level block or timeout."
+          echo "  200 with UA but not raw    = the block is User-Agent based, not IP based."
+          echo "  BYTES very small on a 200  = probably an interstitial or empty shell, not real content."
