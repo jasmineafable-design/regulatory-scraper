@@ -37,8 +37,42 @@ def test_assess_fails_open_on_api_error(monkeypatch):
     result = assessor.assess(_candidate())
 
     assert result.succeeded is False
-    assert result.error == "boom"
+    # Was `== "boom"`. Errors now carry their exception type (and cause chain,
+    # see test below) because a bare message was undiagnosable in production.
+    assert result.error == "RuntimeError: boom"
     assert result.risk_priority_level == "UNAVAILABLE"
+
+
+def test_assess_error_reports_underlying_cause_not_just_wrapper(monkeypatch):
+    """Anthropic's APIConnectionError says only "Connection error."; the real
+    reason lives in __cause__. Losing it cost a diagnostic round-trip on
+    2026-09-04, so the cause chain must survive into the reported error."""
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
+    assessor = Assessor()
+    assessor._client = MagicMock()
+
+    try:
+        raise ConnectionRefusedError("[Errno 111] Connection refused")
+    except ConnectionRefusedError as cause:
+        wrapper = RuntimeError("Connection error.")
+        wrapper.__cause__ = cause
+        assessor._client.messages.create.side_effect = wrapper
+
+    result = assessor.assess(_candidate())
+
+    assert result.succeeded is False
+    assert "Connection error." in result.error
+    assert "Connection refused" in result.error, "the actionable detail was dropped"
+
+
+def test_client_is_configured_with_a_workable_connect_timeout(monkeypatch):
+    """The SDK default is a 5s connect timeout, which every assessment in the
+    2026-09-04 GitHub Actions run failed against."""
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
+    client = Assessor()._get_client()
+
+    assert client.timeout.connect >= 15
+    assert client.max_retries >= 3
 
 
 def test_assess_parses_successful_response(monkeypatch):
