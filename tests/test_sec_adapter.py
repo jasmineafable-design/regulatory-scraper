@@ -100,3 +100,40 @@ def test_sec_adapter_raises_on_empty_response(monkeypatch):
 
     with pytest.raises(ParsingError):
         adapter.fetch_latest_issuances()
+
+
+# --- Regression tests, 2026-09-04 IC/SEC fetch-failure review -----------------
+
+
+def test_sec_block_page_does_not_validate_as_a_listing():
+    """The old validate() returned True for any page with a link, so a failed
+    fetch that still returned HTML validated, parsed to zero candidates, and
+    was reported as 'no new issuances' instead of as a failure."""
+    block_page = """<html><body>
+    <nav><a href="/">Home</a><a href="/contact/">Contact</a></nav>
+    <h1>503 Service Temporarily Unavailable</h1>
+    </body></html>"""
+    assert SECAdapter().validate(block_page) is False
+
+
+def test_sec_titles_sharing_first_40_chars_get_distinct_identifiers():
+    adapter = SECAdapter()
+
+    def page(href, title):
+        return f"<html><h2 class='entry-title'><a href='{href}'>{title}</a></h2></html>"
+
+    a = adapter.parse(page("/opinion-alpha/",
+                           "Request for Opinion on the Applicability of the Revised Corporation Code to Alpha"))
+    b = adapter.parse(page("/opinion-beta/",
+                           "Request for Opinion on the Applicability of the Revised Corporation Code to Beta"))
+
+    assert a[0].issuance_identifier != b[0].issuance_identifier
+
+
+def test_sec_bold_identifier_still_wins_over_fallback():
+    """Well-formed entries must keep their existing identifier so state stays
+    valid after the fallback change."""
+    adapter = SECAdapter()
+    html = ("<html><h2 class='entry-title'><a href='/mc-1-2026/'>"
+            "<b>SEC MC No. 1 s. 2026</b><br>Amendments to the Rules</a></h2></html>")
+    assert adapter.parse(html)[0].issuance_identifier == "SEC MC No. 1 s. 2026"

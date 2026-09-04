@@ -1,3 +1,5 @@
+from unittest.mock import patch
+
 import pytest
 
 from core.adapters.ic_adapter import ICAdapter
@@ -135,3 +137,60 @@ def test_ic_adapter_skips_proxy_when_key_not_configured(monkeypatch):
     adapter.fetch_latest_issuances()
 
     assert captured["use_proxy"] is False
+
+
+# --- Regression tests, 2026-09-04 IC/SEC fetch-failure review -----------------
+
+
+BLOCK_PAGE_HTML = """<html><body>
+<nav><a href="/">Home</a><a href="/about/">About Us</a><a href="/contact/">Contact</a></nav>
+<h1>503 Service Temporarily Unavailable</h1>
+<footer><a href="/privacy/">Privacy Policy</a><a href="https://facebook.com/ic">Facebook</a></footer>
+</body></html>"""
+
+
+def test_block_page_does_not_validate_as_a_listing():
+    """An error/block page has links but no listing. The old validate()
+    accepted any page with a single <a href>, so these passed."""
+    assert ICAdapter().validate(BLOCK_PAGE_HTML) is False
+
+
+def test_block_page_does_not_parse_into_nav_link_issuances():
+    """The removed 'every link on the page' fallback turned a block page into
+    5 issuances named Home / About Us / Contact / Privacy Policy / Facebook,
+    which then got written into state as BASELINE records."""
+    assert ICAdapter().parse(BLOCK_PAGE_HTML) == []
+
+
+def test_block_page_raises_parsing_error_rather_than_reporting_no_updates():
+    adapter = ICAdapter()
+    with patch.object(adapter.http_client, "fetch_html", return_value=BLOCK_PAGE_HTML):
+        with pytest.raises(ParsingError):
+            adapter.fetch_latest_issuances()
+
+
+def test_titles_sharing_first_40_chars_get_distinct_identifiers():
+    """State dedupes on issuance_identifier alone, so a bare title[:40]
+    fallback made the second of two long-shared-prefix titles look
+    already-seen and it was never notified."""
+    adapter = ICAdapter()
+
+    def page(href, title):
+        return f"<html><article><h2 class='entry-title'><a href='{href}'>{title}</a></h2></article></html>"
+
+    a = adapter.parse(page("/notice-annual-statements/",
+                           "Notice to All Insurance Companies Regarding the Submission of Annual Statements"))
+    b = adapter.parse(page("/notice-quarterly-reports/",
+                           "Notice to All Insurance Companies Regarding the Filing of Quarterly Reports"))
+
+    assert a[0].issuance_identifier != b[0].issuance_identifier
+
+
+def test_well_formed_identifiers_are_unchanged_by_the_fallback_fix():
+    """Existing state keys must stay valid -- only the no-number fallback path
+    changed, or every known issuance would re-notify as new."""
+    adapter = ICAdapter()
+    html = ("<html><article><h2 class='entry-title'>"
+            "<a href='/cl-2026-01/'>Circular Letter No. 2026-01 Guidelines</a>"
+            "</h2></article></html>")
+    assert adapter.parse(html)[0].issuance_identifier == "CL No. 2026-01"
