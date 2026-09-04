@@ -23,7 +23,7 @@ core/sheets_config.py and core/schedule.py.
 import argparse
 import logging
 from datetime import datetime
-from typing import Dict, List, Tuple
+from typing import Dict, List, Optional, Tuple
 from zoneinfo import ZoneInfo
 
 from models.issuance import BriefingRecord, CandidateIssuance
@@ -67,17 +67,24 @@ def build_notification_channel(recipient_matrix: Dict[Tuple[str, str], List[str]
     return ConsoleNotificationChannel()
 
 
-def _select_active_adapters(config_reader: SheetsConfigReader) -> List:
-    """Filters ADAPTERS down to (regulator, category) pairs marked Active in the
-    Sources sheet (§3.2). Fail-open when the Sheet is unconfigured/unreachable —
-    get_active_sources() returns None in that case, meaning "no filter, run
-    everything" rather than silently disabling all monitoring (§3.8)."""
+def _select_active_adapters(config_reader: SheetsConfigReader, adapters: Optional[List] = None) -> List:
+    """Filters a pool of adapters down to (regulator, category) pairs marked
+    Active in the Sources sheet (§3.2). Fail-open when the Sheet is
+    unconfigured/unreachable — get_active_sources() returns None in that
+    case, meaning "no filter, run everything" rather than silently disabling
+    all monitoring (§3.8).
+
+    `adapters` lets a caller restrict which adapters are even considered
+    (e.g. tools/run_ic_sec_local.py running only IC/SEC from a machine that
+    isn't blocked, so GitHub's proxy isn't needed for those two). Defaults to
+    the module-level ADAPTERS -- production behavior is unchanged."""
+    pool = adapters if adapters is not None else ADAPTERS
     active_sources = config_reader.get_active_sources()
     if active_sources is None:
-        return list(ADAPTERS)
+        return list(pool)
 
     selected = []
-    for adapter in ADAPTERS:
+    for adapter in pool:
         key = (adapter.regulator_id.upper(), getattr(adapter, "category", "").upper())
         if key in active_sources:
             selected.append(adapter)
@@ -107,7 +114,17 @@ def _baseline_new_categories(
     return remaining
 
 
-def run(is_opening_check: bool, state_manager: "StateManager" = None, config_reader: "SheetsConfigReader" = None) -> dict:
+def run(
+    is_opening_check: bool,
+    state_manager: "StateManager" = None,
+    config_reader: "SheetsConfigReader" = None,
+    adapters: Optional[List] = None,
+) -> dict:
+    """`adapters`, if given, restricts this run to that specific pool instead
+    of the full module-level ADAPTERS (still subject to the Sources sheet's
+    Active filter same as always). Used by tools/run_ic_sec_local.py to run
+    only IC/SEC from a machine that isn't proxy-blocked; production's own
+    invocation via main() never passes this, so its behavior is unchanged."""
     config_reader = config_reader or SheetsConfigReader()
     recipient_matrix = config_reader.get_recipient_matrix()
 
@@ -122,7 +139,7 @@ def run(is_opening_check: bool, state_manager: "StateManager" = None, config_rea
     all_briefings: List[BriefingRecord] = []
     adapter_errors: List[str] = []
 
-    active_adapters = _select_active_adapters(config_reader)
+    active_adapters = _select_active_adapters(config_reader, adapters=adapters)
 
     for adapter in active_adapters:
         if getattr(adapter, "OPENING_CHECK_ONLY", False) and not is_opening_check:
