@@ -7,7 +7,10 @@ deterministic pipeline: Fetch -> Validate -> Detect -> Assess -> Compose -> Noti
 Anthropic API (Claude Haiku) for AI-advisory impact assessment; if
 ANTHROPIC_API_KEY is unset or the call fails for any reason, AI fields fall
 back to "UNAVAILABLE" per the frozen fail-open behavior (core/compose.py)
-rather than blocking the briefing.
+rather than blocking the briefing. Archive (core/archive.py, Phase 5) uploads
+a copy of the source document to Google Drive; if GOOGLE_SERVICE_ACCOUNT_JSON/
+DRIVE_FOLDER_ID are unset or the upload fails for any reason, the archive
+link falls back to "UNAVAILABLE" the same way.
 
 One adapter's failure is isolated from the others (§3.4 principle 3) but is never
 swallowed (§3.4 principle 2): failures are collected and re-raised after every
@@ -27,6 +30,7 @@ from typing import Dict, List, Optional, Tuple
 from zoneinfo import ZoneInfo
 
 from models.issuance import BriefingRecord, CandidateIssuance
+from core.archive import Archiver
 from core.assess import Assessor
 from core.commit_state import StateCommitter
 from core.compose import Composer
@@ -131,7 +135,8 @@ def run(
     state_manager = state_manager or StateManager()
     detector = Detector(state_manager)
     assessor = Assessor(config_reader=config_reader)
-    composer = Composer(assessor=assessor)
+    archiver = Archiver()
+    composer = Composer(assessor=assessor, archiver=archiver)
     committer = StateCommitter(state_manager)
     channel = build_notification_channel(recipient_matrix)
     dispatcher = NotificationDispatcher(channel)

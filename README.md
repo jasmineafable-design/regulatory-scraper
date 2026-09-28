@@ -67,11 +67,11 @@ no-ops (exits 0, not a failure) on wake-ups that don't match.
 `get_business_context()`, but not yet consumed by anything — Assess (Phase 4) is
 the intended consumer and isn't built yet (see below).
 
-AI-based impact assessment (Assess) is intentionally not implemented yet — every
-briefing's AI-derived fields are stubbed as `UNAVAILABLE`, per the approved
-fail-open behavior. Google Drive document archiving is also not implemented yet.
-Both are later, deliberately deferred phases (see the Handoff document's roadmap),
-not oversights in this consolidation.
+AI-based impact assessment (Assess, `core/assess.py`) and Google Drive document
+archiving (Archive, `core/archive.py`) are both implemented as best-effort steps:
+if either is unconfigured or fails for any reason, its field(s) are simply marked
+`UNAVAILABLE` in the briefing — the email still goes out immediately with
+everything else intact, per the frozen fail-open behavior.
 
 ## Setup (Local)
 
@@ -92,6 +92,7 @@ not oversights in this consolidation.
 | `NOTIFICATION_RECIPIENTS` | Fallback only | Comma-separated recipient list used when no Sheet-based recipient mapping is configured for a given regulator. |
 | `GOOGLE_SERVICE_ACCOUNT_JSON` | For Sheet-based config | Path to a Google service account credentials file. If unset, Operational/Business Context Configuration falls back to defaults and env vars — the system does not fail, per the Foundation's "optional, no-op if unset" convention. |
 | `SHEET_ID` | With the above | The spreadsheet ID containing a `Sources` tab (Regulator/Category/Recipients) and a `BusinessContext` tab. |
+| `DRIVE_FOLDER_ID` | For document archiving | The Google Drive folder ID new issuance documents get uploaded into (`core/archive.py`, Phase 5). Reuses the same `GOOGLE_SERVICE_ACCOUNT_JSON` credential as Sheets — create a folder in Drive, share it with the service account's `client_email` (found in the JSON key file) as **Editor**, then copy the folder ID out of its URL (`drive.google.com/drive/folders/<this part>`). Each uploaded file is set to "anyone with the link can view" so recipients outside your Workspace domain can still open it — these are public regulator issuances, not confidential documents. If unset (or the upload fails for any reason), `archived_document_link` is simply marked `UNAVAILABLE` and the briefing still goes out, per the frozen fail-open behavior. |
 | `SCRAPER_PROXY_API_KEY` | For IC and SEC | insurance.gov.ph and sec.gov.ph both block requests from GitHub Actions' (and similar cloud/datacenter) IP ranges specifically (confirmed via real runs/checks). A [ScraperAPI](https://www.scraperapi.com/) key (or compatible service using the same `?api_key=&url=` convention) routes those requests around the block. Without it, IC/SEC adapters will fail loudly on every run rather than silently returning nothing. Both are restricted to the opening check only (`OPENING_CHECK_ONLY` on their adapters) to stay within ScraperAPI's free tier (~100 requests/month) across IC-CL + SEC-MC + SEC-Resolution (~66/month combined). BIR doesn't need this. |
 | `ANTHROPIC_API_KEY` | For AI impact assessment | Powers the Assess step (`core/assess.py`, Phase 4) — calls Claude Haiku (Anthropic API) to produce the executive summary, MIGI/MILI/MIBI impact, risk level, and suggested action for each new issuance. Reads business priorities from the Sheet's `BusinessContext` tab (falls back to a generic default if that tab is empty). If unset, or the call fails for any reason, those fields are simply marked `UNAVAILABLE` in the briefing — the email still goes out immediately with all other information intact, per the frozen fail-open behavior. Get a key at [console.anthropic.com](https://console.anthropic.com) (requires billing/credits — a one-time free trial credit is often available on new accounts, but check Billing → Credit grants for any expiration). Switched from OpenAI → briefly Groq → Anthropic on 2026-09-03 after the OpenAI project ran out of credit; Jas preferred Claude's summary quality and had spare Anthropic credit available. |
 
