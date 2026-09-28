@@ -21,11 +21,18 @@ import re
 from dataclasses import dataclass
 from typing import Optional
 
-import requests
-
+from core.http_client import ScrapingHttpClient
 from models.issuance import CandidateIssuance
 
 logger = logging.getLogger(__name__)
+
+# Same sources that need the ScraperAPI proxy for their listing pages
+# (core/adapters/ic_adapter.py, sec_adapter.py) also need it for individual
+# document URLs -- insurance.gov.ph and sec.gov.ph block direct requests
+# from GitHub Actions' IP ranges regardless of which page on the site is
+# being fetched. Confirmed live 2026-09-28: every un-proxied archive attempt
+# for IC/SEC got a 403, while BIR (not proxy-gated) had no such failures.
+PROXY_REQUIRED_REGULATORS = {"IC", "SEC"}
 
 DRIVE_UPLOAD_URL = (
     "https://www.googleapis.com/upload/drive/v3/files"
@@ -110,6 +117,7 @@ class Archiver:
         self.service_account_json = service_account_json or os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON")
         self.folder_id = folder_id or os.getenv("DRIVE_FOLDER_ID")
         self._session = None
+        self.http_client = ScrapingHttpClient()
 
     def _get_session(self):
         if self._session is None:
@@ -143,13 +151,10 @@ class Archiver:
             )
 
         try:
-            doc_response = requests.get(
-                candidate.source_url,
-                timeout=self.FETCH_TIMEOUT_SEC,
-                headers={"User-Agent": "Mozilla/5.0 (compatible; RegulatoryScraperArchiver/1.0)"},
+            use_proxy = candidate.source_regulator.upper() in PROXY_REQUIRED_REGULATORS
+            doc_content, content_type = self.http_client.fetch_bytes(
+                candidate.source_regulator, candidate.source_url, use_proxy=use_proxy
             )
-            doc_response.raise_for_status()
-            content_type = doc_response.headers.get("Content-Type", "application/octet-stream")
             filename = _safe_filename(candidate, content_type)
 
             session = self._get_session()
@@ -157,7 +162,7 @@ class Archiver:
             metadata = {"name": filename, "parents": [self.folder_id]}
             files = {
                 "metadata": ("metadata", json.dumps(metadata), "application/json; charset=UTF-8"),
-                "file": (filename, doc_response.content, content_type.split(";")[0].strip()),
+                "file": (filename, doc_content, content_type.split(";")[0].strip()),
             }
             upload_response = session.post(DRIVE_UPLOAD_URL, files=files, timeout=self.UPLOAD_TIMEOUT_SEC)
             upload_response.raise_for_status()

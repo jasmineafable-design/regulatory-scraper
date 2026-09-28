@@ -1,7 +1,7 @@
 import os
 import time
 import requests
-from typing import Optional
+from typing import Optional, Tuple
 from core.exceptions import AdapterFetchError
 from core.logger import setup_logger
 
@@ -115,6 +115,29 @@ class ScrapingHttpClient:
         source that's known to block this runner would just fail anyway, in
         a way that's easy to misdiagnose as "site is down."
         """
+        response = self._fetch_with_retries(regulator_id, url, use_proxy=use_proxy)
+        return response.text
+
+    def fetch_bytes(self, regulator_id: str, url: str, use_proxy: bool = False) -> Tuple[bytes, str]:
+        """Same retry/backoff/proxy semantics as fetch_html, but returns the
+        raw response bytes plus its Content-Type header instead of decoded
+        text -- for binary documents (PDFs, etc., see core/archive.py) where
+        .text would corrupt non-text bytes.
+
+        use_proxy=True is required for the same sources fetch_html needs it
+        for (currently IC/SEC) -- their individual document URLs are blocked
+        from GitHub Actions' IP ranges exactly like their listing pages are,
+        confirmed live 2026-09-28 (every un-proxied archive attempt for IC/
+        SEC got a 403).
+        """
+        response = self._fetch_with_retries(regulator_id, url, use_proxy=use_proxy)
+        content_type = response.headers.get("Content-Type", "application/octet-stream")
+        return response.content, content_type
+
+    def _fetch_with_retries(self, regulator_id: str, url: str, use_proxy: bool = False):
+        """Shared retry/backoff/proxy loop underlying both fetch_html and
+        fetch_bytes -- identical behavior, just returning the raw Response
+        so each caller can decide .text vs .content."""
         if use_proxy:
             api_key = os.getenv("SCRAPER_PROXY_API_KEY", "")
             if not api_key:
@@ -145,7 +168,7 @@ class ScrapingHttpClient:
                 else:
                     response = self.session.get(url, timeout=self.timeout)
                 response.raise_for_status()
-                return response.text
+                return response
             except Exception as err:
                 last_exception = err
                 if use_proxy and not _is_transient(err):
