@@ -55,7 +55,17 @@ def _describe_exception(err: BaseException, max_depth: int = 4) -> str:
     as core/assess.py's helper of the same name -- a bare str(err) can hide
     the actionable detail in __cause__ (see assess.py's 2026-09-04 incident).
     Duplicated rather than imported to keep this module's only real
-    dependencies scoped to what Archive itself needs."""
+    dependencies scoped to what Archive itself needs.
+
+    For an HTTPError specifically (e.g. a Drive API 403), requests'
+    raise_for_status() only puts the generic "403 Client Error: Forbidden
+    for url: ..." into str(err) -- it drops the JSON error body Google
+    actually sends back (e.g. "insufficient permissions for the specified
+    parent", "Drive API has not been used in project ... before or it is
+    disabled", "Service Accounts do not have storage quota"), which is
+    exactly the detail needed to tell those failure modes apart. So this
+    also appends response.text (truncated) whenever the exception carries
+    an HTTP response."""
     parts = []
     seen = set()
     current: Optional[BaseException] = err
@@ -64,6 +74,14 @@ def _describe_exception(err: BaseException, max_depth: int = 4) -> str:
         seen.add(id(current))
         text = str(current).strip() or "(no message)"
         parts.append(f"{type(current).__name__}: {text}")
+        response = getattr(current, "response", None)
+        if response is not None:
+            try:
+                body = response.text.strip()
+            except Exception:
+                body = ""
+            if body:
+                parts.append(f"response body: {body[:500]}")
         current = current.__cause__ or current.__context__
         depth += 1
     return " <- ".join(parts)
