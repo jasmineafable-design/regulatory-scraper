@@ -51,7 +51,7 @@ MAX_ATTACHMENT_BYTES = 8 * 1024 * 1024
 # Text shown in the briefing's "Archived Copy" column on success.
 ATTACHED_LABEL = "Attached to this email"
 
-_SAFE_NAME_RE = re.compile(r"[^A-Za-z0-9._-]+")
+_SAFE_NAME_RE = re.compile(r"[^A-Za-z0-9]+")
 
 
 def _describe_exception(err: BaseException, max_depth: int = 4) -> str:
@@ -87,14 +87,24 @@ def _describe_exception(err: BaseException, max_depth: int = 4) -> str:
 
 
 def _safe_filename(candidate: CandidateIssuance, content_type: Optional[str]) -> str:
-    """Builds an attachment-safe filename from the issuance identifier, with
-    an extension guessed from the response's Content-Type (falls back to no
-    extension if the type is unrecognized -- mail clients still save/open the
-    file fine without one)."""
-    base = f"{candidate.source_regulator}-{candidate.source_category}-{candidate.issuance_identifier}"
-    base = _SAFE_NAME_RE.sub("_", base).strip("_")[:150] or "issuance"
+    """Standard attachment filename: REGULATOR_TYPE_NUMBER.ext, e.g.
+    BIR_RMC_RMC-No-61-2026.pdf, IC_CL_<identifier>.pdf, SEC_MC_<identifier>.pdf.
+
+    TYPE is the category without its regulator prefix (IC-CL -> CL). The three
+    parts are joined by "_" and nothing inside a part contains "_", so the
+    name splits back into regulator/type/number unambiguously -- the optional
+    Drive-copy script (docs/Drive-Attachment-Copier.gs) relies on this to file
+    each document under REGULATOR/TYPE folders. Extension is guessed from the
+    response's Content-Type (none if unrecognized -- mail clients still
+    save/open the file fine without one)."""
+    regulator = _SAFE_NAME_RE.sub("-", candidate.source_regulator.upper()).strip("-") or "UNKNOWN"
+    doc_type = candidate.source_category.upper()
+    if doc_type.startswith(f"{candidate.source_regulator.upper()}-"):
+        doc_type = doc_type[len(candidate.source_regulator) + 1:]
+    doc_type = _SAFE_NAME_RE.sub("-", doc_type).strip("-") or "GENERAL"
+    number = _SAFE_NAME_RE.sub("-", candidate.issuance_identifier).strip("-")[:120] or "issuance"
     ext = mimetypes.guess_extension((content_type or "").split(";")[0].strip()) if content_type else None
-    return f"{base}{ext or ''}"
+    return f"{regulator}_{doc_type}_{number}{ext or ''}"
 
 
 @dataclass
