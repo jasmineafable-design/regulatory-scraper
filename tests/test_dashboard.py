@@ -266,6 +266,12 @@ def test_dashboard_cards_match_the_agreed_definitions():
     # The Action Required table: 7 visible columns, overdue first, capped at 20.
     action = cells["A9"]
     assert "ARRAY_CONSTRAIN(SORT(picked,8,TRUE),20,7)" in action
+    # Row-by-row names must be array-wrapped (LET alone gives no array context).
+    for name in ("here", "isOpen", "isNew", "late", "high", "sortKey", "shownStatus"):
+        assert f"{name},ARRAYFORMULA(" in action, name
+    # A failure must not read as an all-clear: the fallback checks the cards.
+    assert 'IF(A5+B5=0,"Nothing needs attention right now"' in action
+    assert "Table could not load" in action
     assert [cells[f"{c}8"] for c in "ABCDEFG"] == ["Priority", "Regulator", "Issuance No.", "Owner", "Due Date", "Status", "Title"]
 
 
