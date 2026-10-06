@@ -17,6 +17,7 @@ locally with GOOGLE_SERVICE_ACCOUNT_JSON and SHEET_ID set:
 The service account needs EDITOR access to the Sheet.
 """
 
+import os
 import sys
 from pathlib import Path
 
@@ -65,6 +66,12 @@ def _cells():
     ]:
         c.append((f"{col}3", label))
         c.append((f"{col}4", formula))
+
+    # Link to the shared Drive archive (same ARCHIVE_FOLDER_URL as the emails).
+    archive_url = os.getenv("ARCHIVE_FOLDER_URL", "").strip()
+    if archive_url.startswith("https://"):
+        c.append(("I3", "Document archive"))
+        c.append(("I4", f'=HYPERLINK("{archive_url}","Open the Regulatory Archive")'))
 
     r = SMALL_TABLES_ROW
     # By regulator (fixed rows so the chart range is exact)
@@ -183,10 +190,10 @@ def build_requests(sheet_id: int):
     requests.append(fmt(_rect(sheet_id, 2, 2, 0, 1), {"textFormat": {"italic": True, "foregroundColor": {"red": 0.5, "green": 0.55, "blue": 0.55}}},
                         "userEnteredFormat.textFormat"))
     # KPI labels + values
-    requests.append(fmt(_rect(sheet_id, 3, 3, 0, 8), {"backgroundColor": DARK, "horizontalAlignment": "CENTER", "wrapStrategy": "WRAP",
+    requests.append(fmt(_rect(sheet_id, 3, 3, 0, 9), {"backgroundColor": DARK, "horizontalAlignment": "CENTER", "wrapStrategy": "WRAP",
                                                       "textFormat": {"bold": True, "foregroundColor": WHITE, "fontSize": 9}},
                         "userEnteredFormat(backgroundColor,horizontalAlignment,wrapStrategy,textFormat)"))
-    requests.append(fmt(_rect(sheet_id, 4, 4, 0, 8), {"backgroundColor": LIGHT, "horizontalAlignment": "CENTER",
+    requests.append(fmt(_rect(sheet_id, 4, 4, 0, 9), {"backgroundColor": LIGHT, "horizontalAlignment": "CENTER",
                                                       "textFormat": {"bold": True, "fontSize": 16}},
                         "userEnteredFormat(backgroundColor,horizontalAlignment,textFormat)"))
     # Section labels
