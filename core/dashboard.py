@@ -165,7 +165,7 @@ def briefings_format_requests(sheet_id: int) -> List[dict]:
                                                  "startColumnIndex": 0, "endColumnIndex": n}}}},
     ]
     # Column widths: readable text columns, narrow short ones.
-    widths = {0: 90, 1: 80, 2: 90, 3: 150, 4: 280, 5: 100, 7: 300, 8: 220, 9: 220, 10: 220,
+    widths = {0: 90, 1: 100, 2: 90, 3: 150, 4: 280, 5: 100, 7: 300, 8: 220, 9: 220, 10: 220,
               11: 150, 12: 150, 13: 100, 14: 110, 15: 220, 16: 220, 17: 120, 18: 100, 19: 130}
     for idx, px in widths.items():
         reqs.append({"updateDimensionProperties": {
