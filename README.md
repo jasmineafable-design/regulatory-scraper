@@ -78,21 +78,34 @@ everything else intact, per the frozen fail-open behavior.
 ## Dashboard (Google Sheet)
 
 The pipeline also writes a human-facing view into the same Sheet (`core/dashboard.py`,
-Foundation §4.5). It is a *rendering* only — Issuance State stays the source of truth —
-and best-effort: if the Sheet can't be written, notifications and state are unaffected.
+Foundation §4.5). Issuance State stays the source of truth for what has been seen, and
+dashboard writes are best-effort: if the Sheet can't be written, notifications and state
+are unaffected.
 
 | Tab | What it holds | Written by |
 |---|---|---|
-| `Briefings` | One row per briefing that was emailed (date, regulator, type, number, title, risk, needs-review, summary, impacts, action, attachment, source link). Filterable. "Needs Review" = Yes when risk is High. | The pipeline, after each notified briefing |
+| `Briefings` | The full log, one row per emailed briefing. Columns A–N come from the scraper (date, regulator, type, number, title, **Review Priority** [the AI's urgency, not a final risk call], summary, AI impacts, suggested action, archived copy, source link). Columns **O–T are the team's**: Applicability (Yes/No/Partially), Impact/Risk, Required Action, Owner, Due Date, Status (For Assessment / Action Required / In Progress / Closed / Not Applicable). | Scraper: new rows only, with Status = For Assessment. Team: O–T. The scraper never edits an existing row. |
 | `Health` | The **latest run only** (overwritten each run): run type, counts, per-source OK/FAILED/SKIPPED. No history, by design. | The pipeline, every real run |
-| `Dashboard` | KPI cards, counts by regulator/month/risk/type, 3 charts, latest 15 briefings, needs-review list. All formulas. | `tools/setup_dashboard.py` (one-time; re-runnable) |
+| `Dashboard` | Five cards (For Assessment, Applicable/Open, High-Risk Open, Overdue, Due Soon), an **Action Required** table (max 20, most urgent first), and one scraper-health line with the archive link. All formulas. | `tools/setup_dashboard.py` |
 
-**Setup:** (1) share the Sheet with the service account's `client_email` as **Editor**
-(Viewer is no longer enough); (2) Actions → **Setup Dashboard Tab** → Run workflow.
-Briefings start appearing from the next notified issuance onward (earlier emails are
-not back-filled). Re-running the setup workflow deletes and recreates only the
-`Dashboard` tab. `tools/test_digest_email.py` sets `DASHBOARD_DISABLED=1` so test
-replays never reach the real log.
+**Workflow:** New regulation → *For Assessment* → team sets **Applicability**. *No* → done (it
+drops off the dashboard). *Yes/Partially* → team fills Impact/Risk, Required Action, Owner, Due
+Date and sets Status → *In Progress* → *Closed*.
+
+**Definitions:** *Open* = Applicability Yes/Partially and Status not Closed/Not Applicable (a blank
+Status counts as open). *For Assessment* = no Applicability chosen yet. *High-Risk Open* = Open and
+Review Priority High. *Overdue* = Open with a Due Date before today. *Due Soon* = Open, due within 30
+days. The Action Required table lists open and not-yet-assessed items: overdue first, then High
+Review Priority, then earliest Due Date, then newest.
+
+**Setup:** (1) the Sheet must be shared with the service account's `client_email` as **Editor**;
+(2) Actions → **Setup Dashboard Tab** → Run workflow (set `demo` = `add` the first time to see sample
+rows; expected cards with only the demo rows: 2 | 3 | 1 | 1 | 1; run again with `demo` = `remove` to
+delete them). Re-running only deletes and recreates the `Dashboard` tab; it upgrades `Briefings` in
+place (header row, dropdowns, hides the legacy "Needs Review" column) and never touches data rows.
+The Briefings tab is now also where the team records its decisions — don't delete rows, and use the
+Sheet's version history if something is changed by mistake. `tools/test_digest_email.py` sets
+`DASHBOARD_DISABLED=1` so test replays never reach the real log.
 
 ## Setup (Local)
 
