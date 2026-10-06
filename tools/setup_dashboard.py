@@ -326,6 +326,11 @@ def build_requests(sheet_id: int):
     requests.append(cond(_rect(sheet_id, SCRAPER_VALUE_ROW, SCRAPER_VALUE_ROW, 2, 3),
                          {"type": "TEXT_CONTAINS", "values": [{"userEnteredValue": "failed"}]},
                          {"textFormat": {"foregroundColor": RED_TEXT, "bold": True}}))
+    # The archive link must LOOK like a link (blue + underlined), otherwise it
+    # reads as plain text and nobody clicks it.
+    requests.append(fmt(_rect(sheet_id, SCRAPER_VALUE_ROW, SCRAPER_VALUE_ROW, 5, 6),
+                        {"textFormat": {**text(11, bold=True, color=BRAND), "underline": True}},
+                        "userEnteredFormat.textFormat"))
     requests.append({"updateDimensionProperties": {
         "range": {"sheetId": sheet_id, "dimension": "ROWS", "startIndex": SCRAPER_VALUE_ROW - 1, "endIndex": SCRAPER_VALUE_ROW},
         "properties": {"pixelSize": 34}, "fields": "pixelSize"}})
