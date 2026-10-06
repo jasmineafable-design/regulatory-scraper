@@ -41,14 +41,28 @@ HEALTH_TAB = "Health"
 DASHBOARD_TAB = "Dashboard"
 
 # Column order is relied on by tools/setup_dashboard.py's formulas -- change
-# both together. A=Date, B=Regulator, C=Type, D=Issuance No., F=Risk,
-# G=Needs Review, L=Attachment, M=Official Source.
+# both together.
+#   A..N  written by the pipeline (A=Date, B=Regulator, C=Type, D=Issuance No.,
+#         E=Title, F=Review Priority, G=Needs Review [hidden, legacy],
+#         L=Archived Copy, M=Official Source, N=Completeness).
+#   O..T  filled in by the Tax/Compliance team -- the pipeline NEVER writes to
+#         these on an existing row (it only appends new rows, setting Status
+#         to "For Assessment"):
+#         O=Applicability, P=Impact/Risk, Q=Required Action, R=Owner,
+#         S=Due Date, T=Status.
 BRIEFINGS_HEADERS = [
-    "Date", "Regulator", "Type", "Issuance No.", "Title", "Risk/Priority",
+    "Date", "Regulator", "Type", "Issuance No.", "Title", "Review Priority",
     "Needs Review", "Executive Summary", "Impact to Underwriting Entities",
     "Impact to Broker Entity", "Suggested Action", "Archived Copy",
     "Official Source", "Completeness",
+    "Applicability", "Impact/Risk", "Required Action", "Owner", "Due Date", "Status",
 ]
+PIPELINE_COLS = 14           # A..N
+TEAM_COLS_START = 14         # 0-based index of O
+APPLICABILITY_OPTIONS = ["Yes", "No", "Partially"]
+STATUS_OPTIONS = ["For Assessment", "Action Required", "In Progress", "Closed", "Not Applicable"]
+DEFAULT_STATUS = "For Assessment"
+
 REGULATOR_COL = 2      # B
 ISSUANCE_NO_COL = 4    # D
 
@@ -91,6 +105,75 @@ def _describe(err: BaseException) -> str:
     return f"{type(err).__name__}: {str(err).strip()[:400] or '(no message)'}"
 
 
+def briefings_format_requests(sheet_id: int) -> List[dict]:
+    """Sheets API requests that give the Briefings tab its look and its
+    team-entry dropdowns. Idempotent -- safe to re-apply on an existing tab."""
+    dark = {"red": 0.17, "green": 0.24, "blue": 0.31}
+    amber = {"red": 1.0, "green": 0.90, "blue": 0.60}
+    white = {"red": 1, "green": 1, "blue": 1}
+    n = len(BRIEFINGS_HEADERS)
+
+    def rect(r0, r1, c0, c1):
+        r = {"sheetId": sheet_id, "startRowIndex": r0, "startColumnIndex": c0, "endColumnIndex": c1}
+        if r1 is not None:
+            r["endRowIndex"] = r1
+        return r
+
+    def validation(col, condition):
+        return {"setDataValidation": {
+            "range": rect(1, None, col, col + 1),   # row 2 down, unbounded (covers appended rows)
+            "rule": {"condition": condition, "strict": True, "showCustomUi": True},
+        }}
+
+    reqs = [
+        {"updateSheetProperties": {
+            "properties": {"sheetId": sheet_id, "gridProperties": {"frozenRowCount": 1, "frozenColumnCount": 4}},
+            "fields": "gridProperties.frozenRowCount,gridProperties.frozenColumnCount",
+        }},
+        # Header: dark for scraper columns, amber for the team's columns.
+        {"repeatCell": {"range": rect(0, 1, 0, TEAM_COLS_START),
+                        "cell": {"userEnteredFormat": {"backgroundColor": dark, "horizontalAlignment": "CENTER",
+                                                       "wrapStrategy": "WRAP",
+                                                       "textFormat": {"bold": True, "foregroundColor": white}}},
+                        "fields": "userEnteredFormat(backgroundColor,horizontalAlignment,wrapStrategy,textFormat)"}},
+        {"repeatCell": {"range": rect(0, 1, TEAM_COLS_START, n),
+                        "cell": {"userEnteredFormat": {"backgroundColor": amber, "horizontalAlignment": "CENTER",
+                                                       "wrapStrategy": "WRAP",
+                                                       "textFormat": {"bold": True}}},
+                        "fields": "userEnteredFormat(backgroundColor,horizontalAlignment,wrapStrategy,textFormat)"}},
+        # Body
+        {"repeatCell": {"range": rect(1, None, 0, n),
+                        "cell": {"userEnteredFormat": {"wrapStrategy": "WRAP", "verticalAlignment": "TOP"}},
+                        "fields": "userEnteredFormat(wrapStrategy,verticalAlignment)"}},
+        {"repeatCell": {"range": rect(1, None, 0, 1),
+                        "cell": {"userEnteredFormat": {"numberFormat": {"type": "DATE", "pattern": "yyyy-mm-dd"}}},
+                        "fields": "userEnteredFormat.numberFormat"}},
+        {"repeatCell": {"range": rect(1, None, 18, 19),   # S = Due Date
+                        "cell": {"userEnteredFormat": {"numberFormat": {"type": "DATE", "pattern": "yyyy-mm-dd"}}},
+                        "fields": "userEnteredFormat.numberFormat"}},
+        # Hide the legacy "Needs Review" column (G): the Dashboard now decides
+        # what needs attention from Applicability/Status/Due Date.
+        {"updateDimensionProperties": {
+            "range": {"sheetId": sheet_id, "dimension": "COLUMNS", "startIndex": 6, "endIndex": 7},
+            "properties": {"hiddenByUser": True}, "fields": "hiddenByUser"}},
+        # Team-entry dropdowns / date check.
+        validation(14, {"type": "ONE_OF_LIST", "values": [{"userEnteredValue": v} for v in APPLICABILITY_OPTIONS]}),
+        validation(19, {"type": "ONE_OF_LIST", "values": [{"userEnteredValue": v} for v in STATUS_OPTIONS]}),
+        validation(18, {"type": "DATE_IS_VALID"}),
+        # Filter across all columns (replaces any older, narrower filter).
+        {"setBasicFilter": {"filter": {"range": {"sheetId": sheet_id, "startRowIndex": 0,
+                                                 "startColumnIndex": 0, "endColumnIndex": n}}}},
+    ]
+    # Column widths: readable text columns, narrow short ones.
+    widths = {0: 90, 1: 80, 2: 90, 3: 150, 4: 280, 5: 100, 7: 300, 8: 220, 9: 220, 10: 220,
+              11: 150, 12: 150, 13: 100, 14: 110, 15: 220, 16: 220, 17: 120, 18: 100, 19: 130}
+    for idx, px in widths.items():
+        reqs.append({"updateDimensionProperties": {
+            "range": {"sheetId": sheet_id, "dimension": "COLUMNS", "startIndex": idx, "endIndex": idx + 1},
+            "properties": {"pixelSize": px}, "fields": "pixelSize"}})
+    return reqs
+
+
 class DashboardWriter:
     def __init__(self, config_reader: Optional[object] = None, tz_name: str = "Asia/Manila"):
         self._gc = getattr(config_reader, "_gc", None)
@@ -130,17 +213,27 @@ class DashboardWriter:
         ws, created = self._get_or_create_tab(spreadsheet, BRIEFINGS_TAB, rows=1000, cols=len(BRIEFINGS_HEADERS))
         if created:
             ws.update(values=[BRIEFINGS_HEADERS], range_name="A1", value_input_option="RAW")
-            try:  # cosmetic only -- never let formatting failure matter
-                ws.freeze(rows=1)
-                ws.format("A1:N1", {"textFormat": {"bold": True}, "backgroundColor": {"red": 0.17, "green": 0.24, "blue": 0.31},
-                                    "horizontalAlignment": "CENTER"})
-                ws.format("A1:N1", {"textFormat": {"bold": True, "foregroundColor": {"red": 1, "green": 1, "blue": 1}}})
-                ws.format("A2:N", {"wrapStrategy": "WRAP", "verticalAlignment": "TOP"})
-                ws.format("A2:A", {"numberFormat": {"type": "DATE", "pattern": "yyyy-mm-dd"}})
-                ws.set_basic_filter()
-            except Exception as e:
-                logger.warning(f"Dashboard: Briefings tab formatting skipped ({_describe(e)})")
+            self.format_briefings_tab(spreadsheet, ws)
         return ws
+
+    def upgrade_briefings_tab(self, spreadsheet):
+        """Brings an EXISTING Briefings tab up to the current layout without
+        touching any data row: rewrites only the header row, adds the team's
+        columns if missing, and re-applies dropdowns/formatting. Used by
+        tools/setup_dashboard.py."""
+        ws = self.ensure_briefings_tab(spreadsheet)
+        if ws.col_count < len(BRIEFINGS_HEADERS):
+            ws.resize(cols=len(BRIEFINGS_HEADERS))
+        ws.update(values=[BRIEFINGS_HEADERS], range_name="A1", value_input_option="RAW")
+        self.format_briefings_tab(spreadsheet, ws)
+        return ws
+
+    def format_briefings_tab(self, spreadsheet, ws) -> None:
+        """Cosmetic + dropdowns; best-effort, never raises."""
+        try:
+            spreadsheet.batch_update({"requests": briefings_format_requests(ws.id)})
+        except Exception as e:
+            logger.warning(f"Dashboard: Briefings tab formatting skipped ({_describe(e)})")
 
     def ensure_health_tab(self, spreadsheet):
         ws, _ = self._get_or_create_tab(spreadsheet, HEALTH_TAB, rows=60, cols=3)
@@ -184,6 +277,9 @@ class DashboardWriter:
                     _archived_copy_cell(b),
                     (b.official_source_link or "").strip(),  # left as-is so it stays a clickable link
                     _text(b.completeness_status),
+                    # Team-filled columns O..T: left blank for the team, except
+                    # Status, which starts every briefing at "For Assessment".
+                    "", "", "", "", "", DEFAULT_STATUS,
                 ])
 
             if rows:
