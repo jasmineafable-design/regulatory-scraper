@@ -175,6 +175,8 @@ Stores a retrievable copy of the source document and produces the content-contra
 
 A rendering of Issuance State, configuration, and application logs for human inspection. Never an independent store of any fact — if it ever disagrees with Issuance State, Issuance State is correct by definition.
 
+**[Built 2026-10-07 — `core/dashboard.py`: a `Briefings` log tab (one row per emailed briefing, appended after Notify + state commit) and a `Health` tab (latest run only, overwritten — no history, honoring the frozen no-health-history decision) in the configuration Sheet, plus a formula/chart-driven `Dashboard` tab built by `tools/setup_dashboard.py`. Fail-open like Assess/Archive. "Needs review" = High risk level. Requires the service account to have Editor access to the Sheet.]**
+
 *(There is no separate Heartbeat/Evidence component. Positive evidence of execution is produced by Notify itself, via whichever of the two business-facing outputs the opening check yields — see §3.4 principle 9 and §3.7.)*
 
 ---
@@ -326,7 +328,7 @@ A new regulator is added by writing a new adapter that satisfies the Candidate I
 - The concrete recurring polling interval — the default of every 30 minutes must be checked against actual free-tier proxy usage for IC once implemented; a coarser interval for IC specifically (versus BIR/SEC) is an acceptable way to stay within budget without changing the architecture. **[Still open — needs real production data; IC currently has no proxy wired in at all (see consolidation summary), so this is moot until that's added.]**
 - Concrete AI provider/model for Assess. **[Still open — Phase 4, not started.]**
 - Concrete notification delivery mechanism (email provider, etc.). **[Resolved: SMTP/Gmail, via `core/notify_channels.EmailNotificationChannel`.]**
-- Concrete archive storage destination and link format. **[Resolved 2026-10-06: the briefing email itself — the document is attached, no link or storage service. Optional: `docs/Drive-Attachment-Copier.gs` copies attachments into the mailbox owner's own Google Drive. Supersedes the 2026-09-28 Google Drive / `DRIVE_FOLDER_ID` decision.]**
+- Concrete archive storage destination and link format. **[Resolved 2026-10-07: Google Drive via an Apps Script web app run in Jas's own account (`docs/Drive-Archive-WebApp.gs`) — the pipeline POSTs the document, the script files it under REGULATOR/TYPE folders and returns the link used in the email (`DRIVE_UPLOAD_URL`/`DRIVE_UPLOAD_TOKEN`). Falls back to attaching the document to the email if the upload isn't configured or fails. Supersedes the 2026-09-28 service-account Drive / `DRIVE_FOLDER_ID` decision.]**
 - Concrete per-adapter identifier-extraction and parsing logic. **[Resolved for a first pass — see §13's note on IC needing re-verification against a live page.]**
 - The exact mechanism for identifying "the opening check." **[Resolved: matched GitHub Actions cron-schedule identity (`github.event.schedule`), not wall-clock comparison.]**
 
