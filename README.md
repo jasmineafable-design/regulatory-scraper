@@ -73,18 +73,26 @@ is unconfigured or fails for any reason, its field(s) are simply marked
 `UNAVAILABLE` in the briefing — the email still goes out immediately with
 everything else intact, per the frozen fail-open behavior.
 
-**Archiving = email attachment.** Archive fetches each new issuance's document and
-the briefing email attaches it (the "Archived Copy" column says "Attached" plus the
-filename). No storage service, credentials, or admin access is involved. A copy also
-stays in the sending mailbox's Sent folder. Limits: 8 MB per document, ~15 MB per
-email; anything over is left off and flagged in the table (the Official Source link
-still works). To also keep the files in Google Drive automatically, paste
-`docs/Drive-Attachment-Copier.gs` into a Google Apps Script in the mailbox account
-(it files each document under `REGULATOR/TYPE/` folders, using the standard
-attachment name `REGULATOR_TYPE_NUMBER.ext`, e.g. `BIR_RMC_RMC-No-61-2026.pdf`)
-(setup steps are at the top of that file). Google Drive upload via a service account
-was dropped on 2026-10-06: service accounts have no storage quota in a normal Drive
-folder, and the only workaround (a Shared Drive) needs a Workspace admin.
+**Archiving = Google Drive link in the email (attachment as fallback).** Archive fetches each new issuance's document and sends it to a small Google Apps Script web app running in Jas's own Google account (`docs/Drive-Archive-WebApp.gs`). The script files it under `Regulatory Archive/<REGULATOR>/<TYPE>/` (filename `REGULATOR_TYPE_NUMBER.ext`, e.g. `BIR_RMC_RMC-No-61-2026.pdf`) in her Drive and returns the file link, which the briefing's "Archived Copy" column shows as "Open in Drive". No service account, Shared Drive, or admin access is involved. If `DRIVE_UPLOAD_URL`/`DRIVE_UPLOAD_TOKEN` aren't set or the upload fails, the document is attached to the email instead (limits: 8 MB per document, ~15 MB per email; over-limit files are flagged in the table and the Official Source link still works). `docs/Drive-Attachment-Copier.gs` is an optional extra that files any fallback attachments into Drive afterwards. Recipients need access to the Drive folder (share it with them) to open the links. Service-account Drive upload was dropped on 2026-10-06: service accounts have no storage quota in a normal Drive folder, and the only workaround (a Shared Drive) needs a Workspace admin.
+
+## Dashboard (Google Sheet)
+
+The pipeline also writes a human-facing view into the same Sheet (`core/dashboard.py`,
+Foundation §4.5). It is a *rendering* only — Issuance State stays the source of truth —
+and best-effort: if the Sheet can't be written, notifications and state are unaffected.
+
+| Tab | What it holds | Written by |
+|---|---|---|
+| `Briefings` | One row per briefing that was emailed (date, regulator, type, number, title, risk, needs-review, summary, impacts, action, attachment, source link). Filterable. "Needs Review" = Yes when risk is High. | The pipeline, after each notified briefing |
+| `Health` | The **latest run only** (overwritten each run): run type, counts, per-source OK/FAILED/SKIPPED. No history, by design. | The pipeline, every real run |
+| `Dashboard` | KPI cards, counts by regulator/month/risk/type, 3 charts, latest 15 briefings, needs-review list. All formulas. | `tools/setup_dashboard.py` (one-time; re-runnable) |
+
+**Setup:** (1) share the Sheet with the service account's `client_email` as **Editor**
+(Viewer is no longer enough); (2) Actions → **Setup Dashboard Tab** → Run workflow.
+Briefings start appearing from the next notified issuance onward (earlier emails are
+not back-filled). Re-running the setup workflow deletes and recreates only the
+`Dashboard` tab. `tools/test_digest_email.py` sets `DASHBOARD_DISABLED=1` so test
+replays never reach the real log.
 
 ## Setup (Local)
 
@@ -106,6 +114,7 @@ folder, and the only workaround (a Shared Drive) needs a Workspace admin.
 | `GOOGLE_SERVICE_ACCOUNT_JSON` | For Sheet-based config | Path to a Google service account credentials file. If unset, Operational/Business Context Configuration falls back to defaults and env vars — the system does not fail, per the Foundation's "optional, no-op if unset" convention. |
 | `SHEET_ID` | With the above | The spreadsheet ID containing a `Sources` tab (Regulator/Category/Recipients) and a `BusinessContext` tab. |
 | `DRIVE_FOLDER_ID` | No longer used | Removed 2026-10-06 — archiving is now an email attachment (see above). Safe to delete this secret from GitHub. |
+| `DRIVE_UPLOAD_URL` / `DRIVE_UPLOAD_TOKEN` | For Drive links | The Web app URL and secret token from `docs/Drive-Archive-WebApp.gs` (setup steps are at the top of that file). If unset, or if an upload fails, the document is attached to the email instead. |
 | `SCRAPER_PROXY_API_KEY` | For IC and SEC | insurance.gov.ph and sec.gov.ph both block requests from GitHub Actions' (and similar cloud/datacenter) IP ranges specifically (confirmed via real runs/checks) — for both their listing pages *and* individual document URLs. A [ScraperAPI](https://www.scraperapi.com/) key (or compatible service using the same `?api_key=&url=` convention) routes those requests around the block. Without it, IC/SEC adapters will fail loudly on every run rather than silently returning nothing, and IC/SEC document archiving will fail open (marked `UNAVAILABLE`) instead of uploading anything. Listing pages are restricted to the opening check only (`OPENING_CHECK_ONLY` on their adapters) to stay within ScraperAPI's free tier (~1,000 requests/month); document archiving is not opening-check-only, since it only fires per genuinely new issuance rather than once/category/day — watch actual usage against the free tier if IC/SEC produce a lot of new issuances in a short span (e.g. a large backlog catch-up). BIR doesn't need this at all. |
 | `ANTHROPIC_API_KEY` | For AI impact assessment | Powers the Assess step (`core/assess.py`, Phase 4) — calls Claude Haiku (Anthropic API) to produce the executive summary, MIGI/MILI/MIBI impact, risk level, and suggested action for each new issuance. Reads business priorities from the Sheet's `BusinessContext` tab (falls back to a generic default if that tab is empty). If unset, or the call fails for any reason, those fields are simply marked `UNAVAILABLE` in the briefing — the email still goes out immediately with all other information intact, per the frozen fail-open behavior. Get a key at [console.anthropic.com](https://console.anthropic.com) (requires billing/credits — a one-time free trial credit is often available on new accounts, but check Billing → Credit grants for any expiration). Switched from OpenAI → briefly Groq → Anthropic on 2026-09-03 after the OpenAI project ran out of credit; Jas preferred Claude's summary quality and had spare Anthropic credit available. |
 

@@ -31,6 +31,7 @@ from zoneinfo import ZoneInfo
 
 from models.issuance import BriefingRecord, CandidateIssuance
 from core.archive import Archiver
+from core.dashboard import DashboardWriter
 from core.assess import Assessor
 from core.commit_state import StateCommitter
 from core.compose import Composer
@@ -140,9 +141,12 @@ def run(
     committer = StateCommitter(state_manager)
     channel = build_notification_channel(recipient_matrix)
     dispatcher = NotificationDispatcher(channel)
+    dashboard = DashboardWriter(config_reader)
 
     all_briefings: List[BriefingRecord] = []
     adapter_errors: List[str] = []
+    # (source, status, detail) per adapter, for the dashboard's Health tab.
+    source_status: List[Tuple[str, str, str]] = []
 
     active_adapters = _select_active_adapters(config_reader, adapters=adapters)
 
@@ -153,7 +157,9 @@ def run(
             # enforced -- fetching on every recurring run silently exhausted
             # the monthly quota within days.
             logger.info(f"[{adapter.regulator_id}] Skipped this run — restricted to the opening check only.")
+            source_status.append((f"{adapter.regulator_id}/{getattr(adapter, 'category', '')}", "SKIPPED", "Opening check only"))
             continue
+        source_label = f"{adapter.regulator_id}/{getattr(adapter, 'category', '')}"
         try:
             candidates = adapter.fetch_latest_issuances()
         except Exception as e:
@@ -161,16 +167,24 @@ def run(
             # still run — but never swallow it (§3.4 principle 2).
             logger.error(f"[{adapter.regulator_id}] Fetch/Validate failed: {e}", exc_info=True)
             adapter_errors.append(f"{adapter.regulator_id}: {e}")
+            source_status.append((source_label, "FAILED", str(e)))
             continue
 
+        fetched_count = len(candidates)
         candidates = _baseline_new_categories(detector, state_manager, candidates)
         new_candidates = detector.detect_new_issuances(candidates, is_category_baseline=False)
+        source_status.append((source_label, "OK", f"{fetched_count} fetched, {len(new_candidates)} new"))
 
         for candidate in new_candidates:
             all_briefings.append(composer.compose_briefing(candidate))
 
     notified = dispatcher.dispatch(all_briefings, is_opening_check=is_opening_check, check_timestamp_info="opening check" if is_opening_check else "recurring check")
     committer.commit_notified_briefings(notified)
+
+    # Human-facing view (Foundation §4.5): best-effort and after the state
+    # commit, so a Sheet problem can never affect notification or state.
+    dashboard.log_briefings(notified)
+    dashboard.write_health_snapshot(is_opening_check, len(all_briefings), len(notified), source_status)
 
     result = {
         "total_new": len(all_briefings),
