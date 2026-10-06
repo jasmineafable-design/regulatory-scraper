@@ -35,6 +35,11 @@ class BriefingRecord:
     risk_priority_level: str = "UNAVAILABLE"
     suggested_action: str = "UNAVAILABLE"
     archived_document_link: str = "UNAVAILABLE"
+    # The archived copy travels as an email attachment (core/archive.py).
+    # Held in memory only for the current run -- never written to state.
+    attachment_filename: Optional[str] = None
+    attachment_content_type: Optional[str] = None
+    attachment_bytes: Optional[bytes] = field(default=None, repr=False, compare=False)
     completeness_status: str = "degraded"  # complete / degraded
     composed_at: str = field(
         default_factory=lambda: datetime.utcnow().isoformat()
