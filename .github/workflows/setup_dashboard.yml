@@ -1,0 +1,38 @@
+# Manual, on-demand: (re)builds the "Dashboard" tab in the configuration
+# Google Sheet -- KPI cards, counts, charts, latest briefings, needs-review
+# list. Run it once after uploading the dashboard code; re-run it any time to
+# rebuild the tab (this deletes and recreates ONLY the Dashboard tab -- the
+# Briefings log and Health tabs are never touched).
+#
+# Needs the service account to have EDITOR access to the Sheet.
+# Costs nothing: no scraping, no proxy, no AI calls.
+
+name: Setup Dashboard Tab
+
+on:
+  workflow_dispatch:
+
+jobs:
+  setup-dashboard:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Build Dashboard tab
+        env:
+          GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
+          SHEET_ID: ${{ secrets.SHEET_ID }}
+        run: python tools/setup_dashboard.py
