@@ -135,6 +135,9 @@ def main() -> int:
     # Point state at the throwaway file BEFORE core.config is imported, since
     # Settings reads the env var once at import time.
     os.environ["STATE_FILE_PATH"] = str(TEST_STATE_PATH)
+    # This test replays real issuances as "new" -- keep them out of the real
+    # dashboard's Briefings log and Health snapshot (core/dashboard.py).
+    os.environ["DASHBOARD_DISABLED"] = "1"
     TEST_STATE_PATH.parent.mkdir(parents=True, exist_ok=True)
     if TEST_STATE_PATH.exists():
         # Must start from empty, or leftovers from a previous run would make
