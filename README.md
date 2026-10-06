@@ -80,6 +80,8 @@ stays in the sending mailbox's Sent folder. Limits: 8 MB per document, ~15 MB pe
 email; anything over is left off and flagged in the table (the Official Source link
 still works). To also keep the files in Google Drive automatically, paste
 `docs/Drive-Attachment-Copier.gs` into a Google Apps Script in the mailbox account
+(it files each document under `REGULATOR/TYPE/` folders, using the standard
+attachment name `REGULATOR_TYPE_NUMBER.ext`, e.g. `BIR_RMC_RMC-No-61-2026.pdf`)
 (setup steps are at the top of that file). Google Drive upload via a service account
 was dropped on 2026-10-06: service accounts have no storage quota in a normal Drive
 folder, and the only workaround (a Shared Drive) needs a Workspace admin.
