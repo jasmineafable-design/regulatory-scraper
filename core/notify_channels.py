@@ -46,6 +46,16 @@ class EmailNotificationChannel:
         archive_url = os.getenv("ARCHIVE_FOLDER_URL", "").strip()
         self.archive_folder_url = archive_url if archive_url.startswith("https://") else ""
 
+        # Optional: link to the monitoring Dashboard (the Google Sheet), built
+        # from the same SHEET_ID the pipeline already uses. The Dashboard is the
+        # Sheet's first tab, so the plain link opens on it.
+        sheet_id = os.getenv("SHEET_ID", "").strip()
+        self.dashboard_url = (
+            f"https://docs.google.com/spreadsheets/d/{sheet_id}/edit"
+            if sheet_id and all(ch.isalnum() or ch in "-_" for ch in sheet_id)
+            else ""
+        )
+
         if default_recipients is not None:
             self.default_recipients = default_recipients
         else:
@@ -161,7 +171,28 @@ class EmailNotificationChannel:
             subject = self._digest_subject(group_briefings)
             attachments, not_attached = self._collect_attachments(group_briefings)
             html_body = self._build_digest_html(group_briefings, not_attached_ids=not_attached)
-            if self._send(subject, html_body, recipients, attachments=attachments):
+            try:
+                sent = self._send(subject, html_body, recipients, attachments=attachments)
+            except smtplib.SMTPDataError as err:
+                # The mail provider refused the message itself (e.g. Gmail's
+                # "552 5.7.0 content presents a potential security issue",
+                # usually an attachment). A blocked attachment must never
+                # withhold the briefing (frozen foundation): resend without
+                # the documents and flag the archive field as unavailable.
+                if not attachments:
+                    raise
+                logger.warning(
+                    f"Mail provider rejected the email with attachments ({err.smtp_code}): "
+                    "resending without them; archived copies are marked unavailable."
+                )
+                for b in group_briefings:
+                    if b.attachment_bytes:
+                        b.attachment_bytes = b.attachment_filename = b.attachment_content_type = None
+                        b.archived_document_link = "UNAVAILABLE"
+                        b.completeness_status = "degraded"
+                html_body = self._build_digest_html(group_briefings)
+                sent = self._send(subject, html_body, recipients)
+            if sent:
                 successful.extend(group_briefings)
             else:
                 logger.error(
@@ -187,16 +218,25 @@ class EmailNotificationChannel:
         return self._send(subject, html_body, recipients)
 
     def _archive_note_html(self) -> str:
-        """One line telling recipients where every issuance document is kept."""
-        if not self.archive_folder_url:
+        """Where to find things: the Drive archive and the Dashboard. Each
+        sentence appears only if its link is configured."""
+        parts = []
+        if self.archive_folder_url:
+            href = html.escape(self.archive_folder_url, quote=True)
+            parts.append(
+                "All issuance documents are archived in our shared Google Drive, organized by "
+                f'regulator and type: <a href="{href}">Open the Regulatory Archive</a>.'
+            )
+        if self.dashboard_url:
+            href = html.escape(self.dashboard_url, quote=True)
+            parts.append(
+                "Track what needs review and action on the monitoring dashboard: "
+                f'<a href="{href}">Open the Dashboard</a>.'
+            )
+        if not parts:
             return ""
-        href = html.escape(self.archive_folder_url, quote=True)
-        return (
-            '<p style="background-color: #f7f9fa; padding: 8px 12px; border-radius: 4px;">'
-            "All issuance documents are archived in our shared Google Drive, organized by regulator and type: "
-            f'<a href="{href}">Open the Regulatory Archive</a>.'
-            "</p>"
-        )
+        body = "<br/>".join(parts)
+        return f'<p style="background-color: #f7f9fa; padding: 8px 12px; border-radius: 4px;">{body}</p>'
 
     @staticmethod
     def _field(value: str) -> str:

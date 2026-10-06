@@ -4,16 +4,15 @@ Archive step (Foundation §3.6/§4.4, Phase 5).
 Best-effort document archiving (Foundation §3.9: "Not a full document
 management system -- archiving is convenience, not records-management").
 
-How archiving works now (changed 2026-10-06/07): this step fetches the source
-document, then (preferred) uploads it through Jas's own Google Apps Script web
-app into her Drive and returns the file link for the email, or (fallback)
-hands the bytes back so the email channel ATTACHES it. The original service-
-account Drive upload was dropped because a service account has no storage
-quota in a normal "My Drive" folder (confirmed live 2026-09-30), and the only
-fix -- a Shared Drive -- needs a Workspace admin, i.e. IT. The Apps Script runs
-as Jas, so it uses her own storage. Scripts: docs/Drive-Archive-WebApp.gs (the
-upload endpoint) and docs/Drive-Attachment-Copier.gs (optional: files any
-fallback attachments into Drive afterwards).
+How archiving works (final, 2026-10-07): this step fetches the issuance's
+PDF and hands its bytes back so the email channel ATTACHES it to the briefing
+(core/notify_channels.py). An hourly Google Apps Script in Jas's own account
+(docs/Drive-Attachment-Copier.gs) then files every attachment into her Drive as
+REGULATOR/TYPE folders. Two earlier designs were dropped: a service-account
+Drive upload (no storage quota outside a Shared Drive, which needs a Workspace
+admin) and an Apps Script web-app upload (the admin only allows company-only
+web apps, so GitHub cannot reach it). IC/SEC issuance URLs are web pages, so
+the PDF is found via the page's link; a web page itself is never attached.
 
 Approved best-effort failure behavior (frozen, §3.8, same rule Phase 4/Assess
 follows): if this fails for any reason (network error, proxy error, file too
@@ -24,15 +23,15 @@ archive() always returns an ArchiveResult, with .succeeded=False and an
 .error on any failure.
 """
 
-import base64
 import logging
 import mimetypes
-import os
 import re
 from dataclasses import dataclass, field
 from typing import Optional
 
-import requests
+from urllib.parse import urljoin
+
+from bs4 import BeautifulSoup
 
 from core.http_client import ScrapingHttpClient
 from models.issuance import CandidateIssuance
@@ -91,6 +90,40 @@ def _describe_exception(err: BaseException, max_depth: int = 4) -> str:
     return " <- ".join(parts)
 
 
+def _looks_like_html(content: bytes, content_type: Optional[str]) -> bool:
+    if "html" in (content_type or "").lower():
+        return True
+    return content[:200].lstrip().lower().startswith((b"<!doctype html", b"<html"))
+
+
+def _find_pdf_link(html: bytes, base_url: str) -> Optional[str]:
+    """Finds the issuance's PDF on its web page.
+
+    Confirmed live 2026-10-07: IC and SEC issuance URLs are web pages, not
+    PDFs. SEC's page has a "Download to View File" link to
+    /wp-content/uploads/....pdf; IC's page embeds the PDF and also links it
+    with a "Download" button. The article body is searched before the whole
+    page so a site-wide menu/footer PDF link is never picked by mistake."""
+    try:
+        soup = BeautifulSoup(html, "html.parser")
+    except Exception:
+        return None
+
+    scopes = [soup.select_one(".entry-content"), soup.find("article"), soup.find("main"), soup]
+    for scope in scopes:
+        if scope is None:
+            continue
+        for tag in scope.find_all("a", href=True):
+            path = tag["href"].strip().split("#")[0].split("?")[0].lower()
+            if path.endswith(".pdf"):
+                return urljoin(base_url, tag["href"].strip())
+        for tag in scope.find_all(["iframe", "embed", "object"]):
+            src = (tag.get("src") or tag.get("data") or "").strip()
+            if src.split("#")[0].split("?")[0].lower().endswith(".pdf"):
+                return urljoin(base_url, src)
+    return None
+
+
 def _safe_filename(candidate: CandidateIssuance, content_type: Optional[str]) -> str:
     """Standard attachment filename: REGULATOR_TYPE_NUMBER.ext, e.g.
     BIR_RMC_RMC-No-61-2026.pdf, IC_CL_<identifier>.pdf, SEC_MC_<identifier>.pdf.
@@ -125,60 +158,16 @@ class ArchiveResult:
 
 
 class Archiver:
-    """Best-effort document archiving (Phase 5).
-
-    Two tiers, each failing open into the next:
-      1. Drive link (preferred): if DRIVE_UPLOAD_URL and DRIVE_UPLOAD_TOKEN are
-         set, the fetched document is POSTed to Jas's own Google Apps Script
-         web app (docs/Drive-Archive-WebApp.gs), which files it into
-         Regulator/Type folders in her Drive and returns the file's link --
-         that link goes in the email. Runs as her, so it uses her own Drive
-         storage; no service account, Shared Drive, or IT involved.
-      2. Email attachment (fallback): if those aren't set, or the upload
-         fails for any reason, the document itself is attached to the email.
-      3. If even the fetch fails: UNAVAILABLE, briefing still goes out.
+    """Best-effort document archiving (Phase 5): fetches the issuance's PDF so
+    the email can attach it. If that fails for any reason the archive field is
+    flagged UNAVAILABLE and the briefing still goes out.
 
     IC/SEC documents are fetched through the same SCRAPER_PROXY_API_KEY proxy
     their listing pages use; BIR is fetched directly.
     """
 
-    UPLOAD_TIMEOUT_SEC = 90
-
-    def __init__(self, upload_url: Optional[str] = None, upload_token: Optional[str] = None):
+    def __init__(self):
         self.http_client = ScrapingHttpClient()
-        self.upload_url = upload_url or os.getenv("DRIVE_UPLOAD_URL")
-        self.upload_token = upload_token or os.getenv("DRIVE_UPLOAD_TOKEN")
-
-    def _upload_to_drive(self, filename: str, content_type: str, content: bytes) -> str:
-        """POSTs the document to the Apps Script web app and returns the Drive
-        file link. Raises on any failure (the caller falls back to attaching
-        the file)."""
-        response = requests.post(
-            self.upload_url,
-            json={
-                "token": self.upload_token,
-                "filename": filename,
-                "content_type": content_type,
-                "data": base64.b64encode(content).decode("ascii"),
-            },
-            timeout=self.UPLOAD_TIMEOUT_SEC,
-        )
-        response.raise_for_status()
-        try:
-            body = response.json()
-        except ValueError:
-            # Typically a Google sign-in/permission HTML page: the web app
-            # isn't deployed with "Anyone" access.
-            raise RuntimeError(
-                "Drive upload endpoint did not return JSON (is the web app deployed with "
-                "'Who has access: Anyone'?)."
-            )
-        if not body.get("ok"):
-            raise RuntimeError(f"Drive upload rejected: {body.get('error', 'unknown error')}")
-        link = body.get("url", "")
-        if not link.startswith("https://"):
-            raise RuntimeError("Drive upload returned no usable link.")
-        return link
 
     def archive(self, candidate: CandidateIssuance) -> ArchiveResult:
         """Never raises (see module docstring) -- always returns an
@@ -189,8 +178,46 @@ class Archiver:
                 candidate.source_regulator, candidate.source_url, use_proxy=use_proxy
             )
 
+            # IC/SEC issuance URLs are web pages that LINK to the PDF; follow
+            # that link so the archived copy is the real document. If no PDF
+            # link is found, or fetching it fails, the page is NOT attached
+            # (see the HTML check below) and the archive field is flagged
+            # unavailable.
+            if doc_content and _looks_like_html(doc_content, content_type):
+                pdf_url = _find_pdf_link(doc_content, candidate.source_url)
+                if pdf_url:
+                    try:
+                        doc_content, content_type = self.http_client.fetch_bytes(
+                            candidate.source_regulator, pdf_url, use_proxy=use_proxy
+                        )
+                    except Exception as pdf_err:
+                        logger.warning(
+                            f"[{candidate.source_regulator}] Could not fetch the PDF for "
+                            f"{candidate.issuance_identifier} at {pdf_url} "
+                            f"({_describe_exception(pdf_err)}) -- the web page will not be attached."
+                        )
+                else:
+                    logger.warning(
+                        f"[{candidate.source_regulator}] No PDF link found on the page for "
+                        f"{candidate.issuance_identifier} -- the web page will not be attached."
+                    )
+
             if not doc_content:
                 raise ValueError("Fetched document was empty.")
+
+            # Never attach a web page. Gmail's SMTP refused a whole briefing
+            # ("552 5.7.0 ... content presents a potential security issue")
+            # while it carried saved HTML pages, and a saved page (or a proxy /
+            # Cloudflare challenge page) is not an archived document anyway.
+            # No PDF means the archive field is flagged UNAVAILABLE and the
+            # briefing's Official Source link is the way to the document.
+            if _looks_like_html(doc_content, content_type):
+                raise ValueError(
+                    "No PDF could be obtained for this issuance (the page had no PDF link, or "
+                    "the PDF could not be fetched); not attaching the web page itself."
+                )
+            if "pdf" in (content_type or "").lower() and b"%PDF" not in doc_content[:1024]:
+                raise ValueError("The downloaded file is labelled a PDF but is not a valid PDF; not attaching it.")
             if len(doc_content) > MAX_ATTACHMENT_BYTES:
                 raise ValueError(
                     f"Document is {len(doc_content) / (1024 * 1024):.1f} MB, over the "
@@ -198,22 +225,6 @@ class Archiver:
                 )
 
             clean_type = (content_type or "application/octet-stream").split(";")[0].strip()
-
-            if self.upload_url and self.upload_token:
-                try:
-                    link = self._upload_to_drive(
-                        _safe_filename(candidate, clean_type), clean_type, doc_content
-                    )
-                    return ArchiveResult(succeeded=True, archived_document_link=link)
-                except Exception as upload_err:
-                    # Fall back to attaching the file rather than losing the
-                    # archived copy altogether.
-                    logger.warning(
-                        f"[{candidate.source_regulator}] Drive upload failed for "
-                        f"{candidate.issuance_identifier} ({_describe_exception(upload_err)}) "
-                        "-- attaching the document to the email instead."
-                    )
-
             return ArchiveResult(
                 succeeded=True,
                 archived_document_link=ATTACHED_LABEL,

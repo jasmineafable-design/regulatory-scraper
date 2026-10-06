@@ -124,7 +124,7 @@ def test_archive_fails_open_when_document_is_empty():
 
 def test_archive_fails_open_when_document_too_large_to_attach():
     archiver = Archiver()
-    big = b"x" * (MAX_ATTACHMENT_BYTES + 1)
+    big = b"%PDF" + b"x" * MAX_ATTACHMENT_BYTES   # a real-looking PDF, just too big
 
     with patch.object(archiver.http_client, "fetch_bytes", return_value=(big, "application/pdf")):
         result = archiver.archive(_candidate())
@@ -132,84 +132,6 @@ def test_archive_fails_open_when_document_too_large_to_attach():
     assert result.succeeded is False
     assert "limit" in result.error
     assert result.attachment_bytes is None
-
-
-# --- Drive-link tier (Apps Script web app), 2026-10-07 ---------------------
-
-
-def _drive_archiver():
-    return Archiver(upload_url="https://script.google.com/macros/s/ABC/exec", upload_token="s3cret")
-
-
-def _post_response(json_body=None, json_error=False, status_error=None):
-    resp = MagicMock()
-    if status_error:
-        resp.raise_for_status.side_effect = status_error
-    else:
-        resp.raise_for_status.return_value = None
-    if json_error:
-        resp.json.side_effect = ValueError("not json")
-    else:
-        resp.json.return_value = json_body
-    return resp
-
-
-def test_archive_uploads_to_drive_and_returns_the_link_when_configured():
-    archiver = _drive_archiver()
-    drive_link = "https://drive.google.com/file/d/xyz/view"
-
-    with patch.object(archiver.http_client, "fetch_bytes", return_value=(b"%PDF-data", "application/pdf")), \
-         patch("core.archive.requests.post", return_value=_post_response({"ok": True, "url": drive_link})) as post:
-        result = archiver.archive(_candidate())
-
-    assert result.succeeded is True
-    assert result.archived_document_link == drive_link
-    assert result.attachment_bytes is None            # link replaces the attachment
-    sent = post.call_args.kwargs["json"]
-    assert sent["token"] == "s3cret"
-    assert sent["filename"] == "BIR_RMC_RMC-No-61-2026.pdf"
-    assert sent["content_type"] == "application/pdf"
-    assert sent["data"]                               # base64 document
-
-
-def test_archive_falls_back_to_attachment_when_drive_upload_fails():
-    for post_response in [
-        _post_response({"ok": False, "error": "bad token"}),
-        _post_response(json_error=True),                                        # HTML sign-in page, not JSON
-        _post_response(status_error=requests.exceptions.HTTPError("500 boom")),
-        _post_response({"ok": True, "url": ""}),
-    ]:
-        archiver = _drive_archiver()
-        with patch.object(archiver.http_client, "fetch_bytes", return_value=(b"%PDF-data", "application/pdf")), \
-             patch("core.archive.requests.post", return_value=post_response):
-            result = archiver.archive(_candidate())
-
-        assert result.succeeded is True
-        assert result.archived_document_link == ATTACHED_LABEL
-        assert result.attachment_bytes == b"%PDF-data"
-
-
-def test_archive_falls_back_to_attachment_when_drive_endpoint_unreachable():
-    archiver = _drive_archiver()
-    with patch.object(archiver.http_client, "fetch_bytes", return_value=(b"%PDF-data", "application/pdf")), \
-         patch("core.archive.requests.post", side_effect=requests.exceptions.ConnectionError("down")):
-        result = archiver.archive(_candidate())
-
-    assert result.succeeded is True
-    assert result.attachment_bytes == b"%PDF-data"
-
-
-def test_archive_does_not_call_drive_when_not_configured(monkeypatch):
-    monkeypatch.delenv("DRIVE_UPLOAD_URL", raising=False)
-    monkeypatch.delenv("DRIVE_UPLOAD_TOKEN", raising=False)
-    archiver = Archiver()
-
-    with patch.object(archiver.http_client, "fetch_bytes", return_value=(b"%PDF-data", "application/pdf")), \
-         patch("core.archive.requests.post") as post:
-        result = archiver.archive(_candidate())
-
-    post.assert_not_called()
-    assert result.attachment_bytes == b"%PDF-data"
 
 
 def test_safe_filename_sanitizes_and_adds_extension():
@@ -258,3 +180,106 @@ def test_safe_filename_has_no_extension_for_unknown_content_type():
     name_none = _safe_filename(_candidate(), None)
 
     assert name_unknown == name_none
+
+
+# --- IC/SEC: follow the page's PDF link (confirmed live 2026-10-07) --------
+
+SEC_PAGE = b"""<html><body>
+<nav><a href="/wp-content/uploads/2020/citizens-charter.pdf">Citizen's Charter</a></nav>
+<article><div class="entry-content">
+  <a href="https://www.sec.gov.ph/wp-content/uploads/2026/10/2026MC_SEC-MC-No.-27.pdf">Download to View File</a>
+</div></article></body></html>"""
+
+IC_PAGE = b"""<html><body><article>
+  <iframe src="https://www.insurance.gov.ph/wp-content/uploads/2026/07/IC-CL-2026-14.pdf#toolbar=0"></iframe>
+  <a href="/wp-content/uploads/2026/07/IC-CL-2026-14.pdf">Download</a>
+</article></body></html>"""
+
+
+def test_sec_page_is_followed_to_its_pdf_not_the_site_menu_pdf():
+    archiver = Archiver()
+    pages = {
+        "https://www.sec.gov.ph/mc-2026/sec-mc-no-27/": (SEC_PAGE, "text/html; charset=UTF-8"),
+        "https://www.sec.gov.ph/wp-content/uploads/2026/10/2026MC_SEC-MC-No.-27.pdf": (b"%PDF-1.7 real", "application/pdf"),
+    }
+    fetch = MagicMock(side_effect=lambda reg, url, use_proxy=False: pages[url])
+
+    with patch.object(archiver.http_client, "fetch_bytes", fetch):
+        result = archiver.archive(_candidate("SEC", "https://www.sec.gov.ph/mc-2026/sec-mc-no-27/"))
+
+    assert result.succeeded is True
+    assert result.attachment_bytes == b"%PDF-1.7 real"
+    assert result.attachment_filename.endswith(".pdf")
+    assert fetch.call_count == 2
+    assert all(call.kwargs["use_proxy"] is True for call in fetch.call_args_list)   # SEC is proxy-gated
+
+
+def test_ic_page_with_embedded_pdf_is_followed_and_relative_links_resolve():
+    archiver = Archiver()
+    page_url = "https://www.insurance.gov.ph/circular-letter-no-2026-14/"
+    pdf_url = "https://www.insurance.gov.ph/wp-content/uploads/2026/07/IC-CL-2026-14.pdf"
+    pages = {page_url: (IC_PAGE, "text/html"), pdf_url: (b"%PDF-1.7 ic", "application/pdf")}
+    fetch = MagicMock(side_effect=lambda reg, url, use_proxy=False: pages[url])
+
+    with patch.object(archiver.http_client, "fetch_bytes", fetch):
+        result = archiver.archive(_candidate("IC", page_url))
+
+    assert result.attachment_bytes == b"%PDF-1.7 ic"
+    assert fetch.call_args_list[1].args[1] == pdf_url
+
+
+def test_direct_pdf_urls_are_not_fetched_twice():
+    """BIR links straight to the PDF -- one fetch, as before."""
+    archiver = Archiver()
+    fetch = MagicMock(return_value=(b"%PDF-1.4 bir", "application/pdf"))
+
+    with patch.object(archiver.http_client, "fetch_bytes", fetch):
+        result = archiver.archive(_candidate("BIR"))
+
+    assert fetch.call_count == 1
+    assert result.attachment_bytes == b"%PDF-1.4 bir"
+
+
+def test_page_without_a_pdf_link_is_not_attached_and_flags_unavailable():
+    """Gmail blocked a whole briefing that carried saved web pages, so a page
+    is never attached: the archive field is flagged instead."""
+    archiver = Archiver()
+    page = b"<html><body><article><p>No file here</p></article></body></html>"
+
+    with patch.object(archiver.http_client, "fetch_bytes", return_value=(page, "text/html")) as fetch:
+        result = archiver.archive(_candidate("IC", "https://www.insurance.gov.ph/x/"))
+
+    assert fetch.call_count == 1
+    assert result.succeeded is False
+    assert result.attachment_bytes is None
+    assert result.archived_document_link == "UNAVAILABLE"
+    assert "not attaching the web page" in result.error
+
+
+def test_page_is_not_attached_when_fetching_its_pdf_fails():
+    archiver = Archiver()
+    calls = {"n": 0}
+
+    def fetch(reg, url, use_proxy=False):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return SEC_PAGE, "text/html"
+        raise requests.exceptions.ConnectionError("pdf host down")
+
+    with patch.object(archiver.http_client, "fetch_bytes", side_effect=fetch):
+        result = archiver.archive(_candidate("SEC", "https://www.sec.gov.ph/mc-2026/sec-mc-no-27/"))
+
+    assert result.succeeded is False
+    assert result.attachment_bytes is None
+
+
+def test_challenge_page_served_as_a_pdf_is_rejected():
+    """A proxy/Cloudflare block page must never be attached as if it were the PDF."""
+    archiver = Archiver()
+    block_page = b"Just a moment... please enable cookies"
+
+    with patch.object(archiver.http_client, "fetch_bytes", return_value=(block_page, "application/pdf")):
+        result = archiver.archive(_candidate("BIR"))
+
+    assert result.succeeded is False
+    assert "not a valid PDF" in result.error

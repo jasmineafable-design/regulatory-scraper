@@ -251,8 +251,76 @@ def test_emails_link_to_the_archive_folder_when_configured(monkeypatch):
     assert "Open the Regulatory Archive" in sent["body"]
 
 
+def test_both_links_appear_in_every_email(monkeypatch):
+    monkeypatch.setenv("ARCHIVE_FOLDER_URL", "https://drive.google.com/drive/folders/ABC123")
+    monkeypatch.setenv("SHEET_ID", "1AbC-dEf_123")
+    channel = EmailNotificationChannel(default_recipients=["x@y.z"])
+
+    digest = channel._build_digest_html([_briefing()])
+    assert 'href="https://drive.google.com/drive/folders/ABC123">Open the Regulatory Archive</a>' in digest
+    assert 'href="https://docs.google.com/spreadsheets/d/1AbC-dEf_123/edit">Open the Dashboard</a>' in digest
+
+    sent = {}
+    channel.sender_email, channel.sender_password = "bot@x.com", "pw"
+    with patch.object(channel, "_send", side_effect=lambda s, body, r, attachments=None: sent.update(body=body) or True):
+        channel.send_daily_monitoring_report("opening check")
+    assert "Open the Regulatory Archive" in sent["body"] and "Open the Dashboard" in sent["body"]
+
+
+def test_each_link_is_independent_and_bad_sheet_ids_are_ignored(monkeypatch):
+    monkeypatch.delenv("ARCHIVE_FOLDER_URL", raising=False)
+    monkeypatch.setenv("SHEET_ID", "1AbC")
+    only_dash = EmailNotificationChannel(default_recipients=["x@y.z"])._build_digest_html([_briefing()])
+    assert "Open the Dashboard" in only_dash and "Regulatory Archive" not in only_dash
+
+    monkeypatch.setenv("SHEET_ID", 'bad"><script>')
+    assert "Open the Dashboard" not in EmailNotificationChannel(default_recipients=["x@y.z"])._build_digest_html([_briefing()])
+
+
 def test_no_archive_line_when_url_unset_or_not_https(monkeypatch):
+    monkeypatch.delenv("SHEET_ID", raising=False)
     for value in ["", "http://insecure.example/folder", "javascript:alert(1)"]:
         monkeypatch.setenv("ARCHIVE_FOLDER_URL", value)
         channel = EmailNotificationChannel(default_recipients=["x@y.z"])
         assert "Regulatory Archive" not in channel._build_digest_html([_briefing()])
+
+
+# --- A blocked attachment must never withhold the briefing, 2026-10-07 -----
+
+
+def test_briefing_is_resent_without_attachments_when_the_mail_provider_blocks_it():
+    """Real failure: Gmail answered 552 5.7.0 'content presents a potential
+    security issue' and the whole briefing was lost."""
+    import smtplib
+
+    channel = EmailNotificationChannel(default_recipients=["ops@x.com"])
+    briefing = _with_doc("RMC No. 1-2026")
+    calls = []
+
+    def fake_send(subject, html_body, recipients, attachments=None):
+        calls.append(attachments)
+        if attachments:
+            raise smtplib.SMTPDataError(552, b"5.7.0 blocked: potential security issue")
+        return True
+
+    with patch.object(channel, "_send", side_effect=fake_send):
+        successful = channel.send_regulatory_briefing_digest([briefing])
+
+    assert successful == [briefing]                      # still delivered and committed
+    assert calls[0] and calls[1] is None                 # first with the file, then without
+    assert briefing.attachment_bytes is None
+    assert briefing.archived_document_link == "UNAVAILABLE"
+    assert briefing.completeness_status == "degraded"
+
+
+def test_smtp_data_error_without_attachments_still_fails_loud():
+    import smtplib
+
+    channel = EmailNotificationChannel(default_recipients=["ops@x.com"])
+    with patch.object(channel, "_send", side_effect=smtplib.SMTPDataError(552, b"blocked")):
+        try:
+            channel.send_regulatory_briefing_digest([_briefing()])
+            raised = False
+        except smtplib.SMTPDataError:
+            raised = True
+    assert raised
