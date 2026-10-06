@@ -96,16 +96,23 @@ ACTION_FORMULA = (
     f"due,{B}!S2:S,"
     f"prio,{B}!F2:F,"
     f"added,{B}!A2:A,"
-    'here,ids<>"",'
-    'isOpen,here*ISNUMBER(MATCH(appl,{"Yes","Partially"},0))*(1-ISNUMBER(MATCH(stat,{"Closed","Not Applicable"},0))),'
-    'isNew,here*(appl=""),'
-    'late,isOpen*(due<>"")*(due<TODAY()),'
-    'high,--(prio="High"),'
-    "sortKey,(1-late)*1E12+(1-high)*1E11+IF(due=\"\",99999,IFERROR(due+0,99999))*1E5+(99999-IFERROR(added+0,0)),"
-    'shownStatus,IF(isNew=1,"For Assessment",IF(stat="","Action Required",stat)),'
-    f"picked,FILTER({{prio,{B}!B2:B,ids,{B}!R2:R,due,shownStatus,{B}!E2:E,sortKey}},(isOpen+isNew)>0),"
+    # Every name that does row-by-row maths is wrapped in ARRAYFORMULA: outside
+    # SUMPRODUCT/FILTER, Google Sheets will not expand a range into an array on
+    # its own (LET does not create an array context), and the whole table
+    # would silently fail.
+    'here,ARRAYFORMULA(ids<>""),'
+    'isOpen,ARRAYFORMULA(here*ISNUMBER(MATCH(appl,{"Yes","Partially"},0))*(1-ISNUMBER(MATCH(stat,{"Closed","Not Applicable"},0)))),'
+    'isNew,ARRAYFORMULA(here*(appl="")),'
+    'late,ARRAYFORMULA(isOpen*(due<>"")*(due<TODAY())),'
+    'high,ARRAYFORMULA(--(prio="High")),'
+    "sortKey,ARRAYFORMULA((1-late)*1E12+(1-high)*1E11+IF(due=\"\",99999,IFERROR(due+0,99999))*1E5+(99999-IFERROR(added+0,0))),"
+    'shownStatus,ARRAYFORMULA(IF(isNew=1,"For Assessment",IF(stat="","Action Required",stat))),'
+    f"picked,FILTER({{prio,{B}!B2:B,ids,{B}!R2:R,due,shownStatus,{B}!E2:E,sortKey}},ARRAYFORMULA((isOpen+isNew)>0)),"
     f"ARRAY_CONSTRAIN(SORT(picked,8,TRUE),{ACTION_MAX_ROWS},7)"
-    '),"Nothing needs attention right now")'
+    # Only claim "nothing needs attention" when the cards agree (0 items);
+    # otherwise a failure must not masquerade as an all-clear.
+    f'),IF(A{CARDS_VALUE_ROW}+B{CARDS_VALUE_ROW}=0,"Nothing needs attention right now",'
+    '"Table could not load - see the Briefings tab"))'
 )
 
 
