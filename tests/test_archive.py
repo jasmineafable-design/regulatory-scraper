@@ -109,7 +109,7 @@ def test_archive_succeeds_and_returns_attachment():
     assert result.attachment_bytes == b"%PDF-data"
     assert result.attachment_content_type == "application/pdf"
     assert result.attachment_filename.endswith(".pdf")
-    assert "BIR-RMC" in result.attachment_filename
+    assert result.attachment_filename == "BIR_RMC_RMC-No-61-2026.pdf"
 
 
 def test_archive_fails_open_when_document_is_empty():
@@ -137,9 +137,40 @@ def test_archive_fails_open_when_document_too_large_to_attach():
 def test_safe_filename_sanitizes_and_adds_extension():
     name = _safe_filename(_candidate(), "application/pdf")
 
-    assert name.endswith(".pdf")
-    assert " " not in name
-    assert "BIR-RMC" in name
+    assert name == "BIR_RMC_RMC-No-61-2026.pdf"
+
+
+def test_safe_filename_strips_regulator_prefix_from_type():
+    ic = CandidateIssuance(
+        source_regulator="IC", source_category="IC-CL", issuance_identifier="CL 2026-05",
+        issuance_title="t", source_url="u", raw_content_reference="r",
+    )
+    sec = CandidateIssuance(
+        source_regulator="SEC", source_category="SEC-RESOLUTION", issuance_identifier="Res. No. 12 s.2026",
+        issuance_title="t", source_url="u", raw_content_reference="r",
+    )
+
+    assert _safe_filename(ic, "application/pdf") == "IC_CL_CL-2026-05.pdf"
+    assert _safe_filename(sec, None) == "SEC_RESOLUTION_Res-No-12-s-2026"
+
+
+def test_safe_filename_always_splits_into_three_parts():
+    """The Drive-copy script splits on '_' (max 2 splits) to find
+    regulator/type -- no part may itself contain an underscore."""
+    for regulator, category, identifier in [
+        ("BIR", "RMC", "RMC No. 1_2-2026"),
+        ("IC", "IC-ADVISORY", "RS_2026_008"),
+        ("SEC", "SEC-MC", "MC No. 5 s.2026"),
+    ]:
+        c = CandidateIssuance(
+            source_regulator=regulator, source_category=category, issuance_identifier=identifier,
+            issuance_title="t", source_url="u", raw_content_reference="r",
+        )
+        stem = _safe_filename(c, "application/pdf").rsplit(".", 1)[0]
+        parts = stem.split("_", 2)
+        assert len(parts) == 3
+        assert parts[0] == regulator
+        assert "_" not in parts[1]
 
 
 def test_safe_filename_has_no_extension_for_unknown_content_type():
