@@ -4,15 +4,16 @@ Archive step (Foundation §3.6/§4.4, Phase 5).
 Best-effort document archiving (Foundation §3.9: "Not a full document
 management system -- archiving is convenience, not records-management").
 
-How archiving works now (changed 2026-10-06): this step fetches the source
-document and hands its bytes back so the email channel can ATTACH it to the
-briefing (core/notify_channels.py). It no longer uploads anywhere itself.
-The Google Drive upload was dropped because a service account has no storage
+How archiving works now (changed 2026-10-06/07): this step fetches the source
+document, then (preferred) uploads it through Jas's own Google Apps Script web
+app into her Drive and returns the file link for the email, or (fallback)
+hands the bytes back so the email channel ATTACHES it. The original service-
+account Drive upload was dropped because a service account has no storage
 quota in a normal "My Drive" folder (confirmed live 2026-09-30), and the only
-fix -- a Shared Drive -- needs a Workspace admin, i.e. IT. The email itself is
-now the archive: recipients open the file directly, and a copy sits in the
-sending mailbox's Sent folder. An optional Google Apps Script in Jas's own
-account can copy attachments into her Drive (docs/Drive-Attachment-Copier.gs).
+fix -- a Shared Drive -- needs a Workspace admin, i.e. IT. The Apps Script runs
+as Jas, so it uses her own storage. Scripts: docs/Drive-Archive-WebApp.gs (the
+upload endpoint) and docs/Drive-Attachment-Copier.gs (optional: files any
+fallback attachments into Drive afterwards).
 
 Approved best-effort failure behavior (frozen, §3.8, same rule Phase 4/Assess
 follows): if this fails for any reason (network error, proxy error, file too
@@ -23,11 +24,15 @@ archive() always returns an ArchiveResult, with .succeeded=False and an
 .error on any failure.
 """
 
+import base64
 import logging
 import mimetypes
+import os
 import re
 from dataclasses import dataclass, field
 from typing import Optional
+
+import requests
 
 from core.http_client import ScrapingHttpClient
 from models.issuance import CandidateIssuance
@@ -120,15 +125,60 @@ class ArchiveResult:
 
 
 class Archiver:
-    """Best-effort document fetch-for-attachment (Phase 5).
+    """Best-effort document archiving (Phase 5).
 
-    Needs no credentials of its own. IC/SEC documents are fetched through the
-    same SCRAPER_PROXY_API_KEY proxy their listing pages use; BIR is fetched
-    directly.
+    Two tiers, each failing open into the next:
+      1. Drive link (preferred): if DRIVE_UPLOAD_URL and DRIVE_UPLOAD_TOKEN are
+         set, the fetched document is POSTed to Jas's own Google Apps Script
+         web app (docs/Drive-Archive-WebApp.gs), which files it into
+         Regulator/Type folders in her Drive and returns the file's link --
+         that link goes in the email. Runs as her, so it uses her own Drive
+         storage; no service account, Shared Drive, or IT involved.
+      2. Email attachment (fallback): if those aren't set, or the upload
+         fails for any reason, the document itself is attached to the email.
+      3. If even the fetch fails: UNAVAILABLE, briefing still goes out.
+
+    IC/SEC documents are fetched through the same SCRAPER_PROXY_API_KEY proxy
+    their listing pages use; BIR is fetched directly.
     """
 
-    def __init__(self):
+    UPLOAD_TIMEOUT_SEC = 90
+
+    def __init__(self, upload_url: Optional[str] = None, upload_token: Optional[str] = None):
         self.http_client = ScrapingHttpClient()
+        self.upload_url = upload_url or os.getenv("DRIVE_UPLOAD_URL")
+        self.upload_token = upload_token or os.getenv("DRIVE_UPLOAD_TOKEN")
+
+    def _upload_to_drive(self, filename: str, content_type: str, content: bytes) -> str:
+        """POSTs the document to the Apps Script web app and returns the Drive
+        file link. Raises on any failure (the caller falls back to attaching
+        the file)."""
+        response = requests.post(
+            self.upload_url,
+            json={
+                "token": self.upload_token,
+                "filename": filename,
+                "content_type": content_type,
+                "data": base64.b64encode(content).decode("ascii"),
+            },
+            timeout=self.UPLOAD_TIMEOUT_SEC,
+        )
+        response.raise_for_status()
+        try:
+            body = response.json()
+        except ValueError:
+            # Typically a Google sign-in/permission HTML page: the web app
+            # isn't deployed with "Anyone" access.
+            raise RuntimeError(
+                "Drive upload endpoint did not return JSON (is the web app deployed with "
+                "'Who has access: Anyone'?)."
+            )
+        if not body.get("ok"):
+            raise RuntimeError(f"Drive upload rejected: {body.get('error', 'unknown error')}")
+        link = body.get("url", "")
+        if not link.startswith("https://"):
+            raise RuntimeError("Drive upload returned no usable link.")
+        return link
 
     def archive(self, candidate: CandidateIssuance) -> ArchiveResult:
         """Never raises (see module docstring) -- always returns an
@@ -148,6 +198,22 @@ class Archiver:
                 )
 
             clean_type = (content_type or "application/octet-stream").split(";")[0].strip()
+
+            if self.upload_url and self.upload_token:
+                try:
+                    link = self._upload_to_drive(
+                        _safe_filename(candidate, clean_type), clean_type, doc_content
+                    )
+                    return ArchiveResult(succeeded=True, archived_document_link=link)
+                except Exception as upload_err:
+                    # Fall back to attaching the file rather than losing the
+                    # archived copy altogether.
+                    logger.warning(
+                        f"[{candidate.source_regulator}] Drive upload failed for "
+                        f"{candidate.issuance_identifier} ({_describe_exception(upload_err)}) "
+                        "-- attaching the document to the email instead."
+                    )
+
             return ArchiveResult(
                 succeeded=True,
                 archived_document_link=ATTACHED_LABEL,

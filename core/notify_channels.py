@@ -232,6 +232,9 @@ class EmailNotificationChannel:
                 f'<span style="font-size: 11px; color: #7f8c8d; word-break: break-all;">'
                 f"{html.escape(b.attachment_filename or '')}</span>"
             )
+        link = (b.archived_document_link or "").strip()
+        if link.startswith("https://"):
+            return f'<a href="{html.escape(link, quote=True)}">Open in Drive</a>'
         return self._field(b.archived_document_link)
 
     @staticmethod
