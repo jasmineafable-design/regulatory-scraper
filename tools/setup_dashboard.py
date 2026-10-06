@@ -1,30 +1,54 @@
 """
-Builds (or rebuilds) the "Dashboard" tab in the configuration Google Sheet:
-KPI cards, counts by regulator / month / risk / type, three charts, the 15
-latest briefings, and every High-risk ("needs review") item.
+Builds (or rebuilds) the "Dashboard" tab in the configuration Google Sheet and
+brings the "Briefings" tab up to the current layout.
 
-Everything on the tab is a formula over the "Briefings" and "Health" tabs, so
-it updates by itself as the pipeline logs new briefings -- no code runs after
-this setup. Re-running this tool DELETES and recreates the Dashboard tab
-(handy after layout changes; any manual edits to that tab are lost). It never
-touches the Briefings or Health tabs' data.
+DASHBOARD (oversight only -- the detail lives on the Briefings tab):
+  - Five cards: For Assessment | Applicable / Open | High-Risk Open | Overdue |
+    Due Soon (30 days).
+  - "Action Required": up to 20 items that need assessment or action, most
+    urgent first (overdue, then High review priority, then earliest due date,
+    then newest).
+  - One compact scraper line: last run, result, sources failing, archive link.
 
-Run it from GitHub: Actions -> "Setup Dashboard Tab" -> Run workflow. Or
-locally with GOOGLE_SERVICE_ACCOUNT_JSON and SHEET_ID set:
+  Everything is a formula over the Briefings and Health tabs, so it updates by
+  itself. Re-running this tool DELETES and recreates only the Dashboard tab
+  (manual edits to that tab are lost).
 
-    python tools/setup_dashboard.py
+BRIEFINGS UPGRADE (never touches data rows): rewrites the header row, adds the
+team's six columns (Applicability, Impact/Risk, Required Action, Owner, Due
+Date, Status) with dropdowns, hides the legacy "Needs Review" column.
+
+HOW "OPEN" IS DEFINED
+  Open       = Applicability is Yes or Partially, and Status is not Closed /
+               Not Applicable (a blank Status counts as open).
+  For Assessment = no Applicability chosen yet.
+  Applicability "No" drops the item from every card and table.
+
+Run from GitHub: Actions -> "Setup Dashboard Tab" -> Run workflow. Or locally
+with GOOGLE_SERVICE_ACCOUNT_JSON and SHEET_ID set:
+
+    python tools/setup_dashboard.py              # build/rebuild
+    python tools/setup_dashboard.py --demo add   # also add 7 clearly-marked DEMO rows
+    python tools/setup_dashboard.py --demo remove
+
+Demo rows are only for checking the layout. Expected cards with the demo rows
+and no real data: For Assessment 2 | Applicable/Open 3 | High-Risk Open 1 |
+Overdue 1 | Due Soon 1.
 
 The service account needs EDITOR access to the Sheet.
 """
 
+import argparse
 import os
 import sys
+from datetime import datetime, timedelta
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT))
 
 from core.dashboard import (  # noqa: E402
+    BRIEFINGS_HEADERS,
     BRIEFINGS_TAB,
     DASHBOARD_TAB,
     HEALTH_TAB,
@@ -37,206 +61,231 @@ H = HEALTH_TAB
 
 DARK = {"red": 0.17, "green": 0.24, "blue": 0.31}
 WHITE = {"red": 1, "green": 1, "blue": 1}
-LIGHT = {"red": 0.97, "green": 0.98, "blue": 0.98}
-RED_BG = {"red": 0.99, "green": 0.88, "blue": 0.87}
+LIGHT = {"red": 0.96, "green": 0.97, "blue": 0.97}
+RED_BG = {"red": 0.96, "green": 0.80, "blue": 0.78}
+AMBER_BG = {"red": 1.0, "green": 0.92, "blue": 0.70}
+RED_TEXT = {"red": 0.75, "green": 0.10, "blue": 0.10}
+GRAY_TEXT = {"red": 0.45, "green": 0.50, "blue": 0.50}
 
-# Row/column anchors (0-based indexes are derived from these 1-based rows).
-SMALL_TABLES_ROW = 7          # header row of the four small tables
-CHARTS_ANCHOR_ROW = 21        # charts sit over A21:L37 (no data there)
-LATEST_LABEL_ROW = 39
-LATEST_QUERY_ROW = 40         # header + 15 rows -> 40..55
-REVIEW_LABEL_ROW = 58
-REVIEW_QUERY_ROW = 59         # spills downward, last block on the tab
+CARDS_LABEL_ROW = 4
+CARDS_VALUE_ROW = 5
+ACTION_LABEL_ROW = 7
+ACTION_HEADER_ROW = 8
+ACTION_FIRST_ROW = 9
+ACTION_MAX_ROWS = 20
+ACTION_LAST_ROW = ACTION_FIRST_ROW + ACTION_MAX_ROWS - 1   # 28
+SCRAPER_LABEL_ROW = 30
+SCRAPER_HEADER_ROW = 31
+SCRAPER_VALUE_ROW = 32
+
+# A row is "open": has an issuance, applicability is Yes/Partially, and status
+# is not Closed / Not Applicable. Shared by every card.
+OPEN = (
+    f'({B}!D2:D<>"")*ISNUMBER(MATCH({B}!O2:O,{{"Yes","Partially"}},0))'
+    f'*(1-ISNUMBER(MATCH({B}!T2:T,{{"Closed","Not Applicable"}},0)))'
+)
+
+# Sorted, filtered Action Required table. Output columns:
+# Priority | Regulator | Issuance No. | Owner | Due Date | Status | Title
+# (an 8th sort-key column is built and then dropped by ARRAY_CONSTRAIN).
+ACTION_FORMULA = (
+    "=IFERROR(LET("
+    f"ids,{B}!D2:D,"
+    f"appl,{B}!O2:O,"
+    f"stat,{B}!T2:T,"
+    f"due,{B}!S2:S,"
+    f"prio,{B}!F2:F,"
+    f"added,{B}!A2:A,"
+    'here,ids<>"",'
+    'isOpen,here*ISNUMBER(MATCH(appl,{"Yes","Partially"},0))*(1-ISNUMBER(MATCH(stat,{"Closed","Not Applicable"},0))),'
+    'isNew,here*(appl=""),'
+    'late,isOpen*(due<>"")*(due<TODAY()),'
+    'high,--(prio="High"),'
+    "sortKey,(1-late)*1E12+(1-high)*1E11+IF(due=\"\",99999,IFERROR(due+0,99999))*1E5+(99999-IFERROR(added+0,0)),"
+    'shownStatus,IF(isNew=1,"For Assessment",IF(stat="","Action Required",stat)),'
+    f"picked,FILTER({{prio,{B}!B2:B,ids,{B}!R2:R,due,shownStatus,{B}!E2:E,sortKey}},(isOpen+isNew)>0),"
+    f"ARRAY_CONSTRAIN(SORT(picked,8,TRUE),{ACTION_MAX_ROWS},7)"
+    '),"Nothing needs attention right now")'
+)
 
 
 def _cells():
     """(A1 address, value) pairs. Formulas use USER_ENTERED."""
     c = []
-    c.append(("A1", "Regulatory Scraper — Dashboard"))
-    c.append(("A2", f"Live view of the '{B}' log and the latest run. Formulas only — do not type over them."))
+    c.append(("A1", "Regulatory Monitoring — Dashboard"))
+    c.append(("A2", "New issuances start as For Assessment. Details and team assessment are on the 'Briefings' tab. Formulas only — do not type over them."))
 
-    # KPI cards (labels row 3, values row 4)
-    for col, label, formula in [
-        ("A", "Briefings logged", f"=COUNTA({B}!D2:D)"),
-        ("B", "This month", f'=COUNTIFS({B}!A2:A,">="&DATE(YEAR(TODAY()),MONTH(TODAY()),1))'),
-        ("C", "Needs review (High risk)", f'=COUNTIF({B}!G2:G,"Yes")'),
-        ("D", "Last run", f"={H}!B1"),
-        ("E", "Last run result", f"={H}!B5"),
-        ("G", "Sources failing", f'=COUNTIF({H}!B8:B,"FAILED")'),
-    ]:
-        c.append((f"{col}3", label))
-        c.append((f"{col}4", formula))
+    cards = [
+        ("A", "For Assessment", f'=COUNTIFS({B}!D2:D,"<>",{B}!O2:O,"")'),
+        ("B", "Applicable / Open", f"=SUMPRODUCT({OPEN})"),
+        ("C", "High-Risk Open", f'=SUMPRODUCT({OPEN}*({B}!F2:F="High"))'),
+        ("D", "Overdue", f'=SUMPRODUCT({OPEN}*({B}!S2:S<>"")*({B}!S2:S<TODAY()))'),
+        ("E", "Due Soon (30 days)",
+         f'=SUMPRODUCT({OPEN}*({B}!S2:S<>"")*({B}!S2:S>=TODAY())*({B}!S2:S<=TODAY()+30))'),
+    ]
+    for col, label, formula in cards:
+        c.append((f"{col}{CARDS_LABEL_ROW}", label))
+        c.append((f"{col}{CARDS_VALUE_ROW}", formula))
 
-    # Link to the shared Drive archive (same ARCHIVE_FOLDER_URL as the emails).
+    c.append((f"A{ACTION_LABEL_ROW}", "Action Required"))
+    c.append((
+        f"D{ACTION_LABEL_ROW}",
+        f'=IF(A{CARDS_VALUE_ROW}+B{CARDS_VALUE_ROW}>{ACTION_MAX_ROWS},'
+        f'"Showing the top {ACTION_MAX_ROWS} of "&(A{CARDS_VALUE_ROW}+B{CARDS_VALUE_ROW})&" — see the Briefings tab for the rest","")',
+    ))
+    for col, label in zip("ABCDEFG", ["Priority", "Regulator", "Issuance No.", "Owner", "Due Date", "Status", "Title"]):
+        c.append((f"{col}{ACTION_HEADER_ROW}", label))
+    c.append((f"A{ACTION_FIRST_ROW}", ACTION_FORMULA))
+
+    # Scraper health: one compact line.
+    c.append((f"A{SCRAPER_LABEL_ROW}", "Scraper"))
+    c.append((f"A{SCRAPER_HEADER_ROW}", "Last run"))
+    c.append((f"C{SCRAPER_HEADER_ROW}", "Result"))
+    c.append((f"E{SCRAPER_HEADER_ROW}", "Sources failing"))
+    c.append((f"A{SCRAPER_VALUE_ROW}", f'=IF({H}!B1="","(no run recorded yet)",{H}!B1)'))
+    c.append((f"C{SCRAPER_VALUE_ROW}", f'=IF({H}!B5="","—",{H}!B5)'))
+    c.append((f"E{SCRAPER_VALUE_ROW}", f'=COUNTIF({H}!B8:B,"FAILED")'))
     archive_url = os.getenv("ARCHIVE_FOLDER_URL", "").strip()
     if archive_url.startswith("https://"):
-        c.append(("I3", "Document archive"))
-        c.append(("I4", f'=HYPERLINK("{archive_url}","Open the Regulatory Archive")'))
-
-    r = SMALL_TABLES_ROW
-    # By regulator (fixed rows so the chart range is exact)
-    c.append((f"A{r - 1}", "By regulator"))
-    c += [(f"A{r}", "Regulator"), (f"B{r}", "Briefings")]
-    for i, reg in enumerate(["BIR", "IC", "SEC"], start=1):
-        c.append((f"A{r + i}", reg))
-        c.append((f"B{r + i}", f'=COUNTIF({B}!$B$2:$B,A{r + i})'))
-
-    # By month: last 12 months, fixed rows
-    c.append((f"D{r - 1}", "By month (last 12)"))
-    c += [(f"D{r}", "Month"), (f"E{r}", "Briefings")]
-    for i in range(1, 13):
-        if i == 1:
-            c.append((f"D{r + i}", "=EDATE(DATE(YEAR(TODAY()),MONTH(TODAY()),1),-11)"))
-        else:
-            c.append((f"D{r + i}", f"=EDATE(D{r + i - 1},1)"))
-        c.append((f"E{r + i}", f'=COUNTIFS({B}!$A$2:$A,">="&D{r + i},{B}!$A$2:$A,"<"&EDATE(D{r + i},1))'))
-
-    # By risk (fixed rows)
-    c.append((f"G{r - 1}", "By risk level"))
-    c += [(f"G{r}", "Risk"), (f"H{r}", "Briefings")]
-    for i, risk in enumerate(["High", "Medium", "Low"], start=1):
-        c.append((f"G{r + i}", risk))
-        c.append((f"H{r + i}", f'=COUNTIF({B}!$F$2:$F,G{r + i})'))
-
-    # By regulator & type (spills)
-    c.append((f"J{r - 1}", "By regulator and type"))
-    c.append((
-        f"J{r}",
-        f'=IFERROR(QUERY({B}!A1:N,"select B, C, count(D) where D is not null group by B, C order by B, C '
-        f"label B 'Regulator', C 'Type', count(D) 'Briefings'\",1),\"No briefings logged yet\")",
-    ))
-
-    c.append((f"A{CHARTS_ANCHOR_ROW - 1}", "Charts"))
-
-    c.append((f"A{LATEST_LABEL_ROW}", "Latest 15 briefings"))
-    c.append((
-        f"A{LATEST_QUERY_ROW}",
-        f'=IFERROR(QUERY({B}!A1:N,"select A, B, C, D, E, F, L, M order by A desc limit 15",1),"No briefings logged yet")',
-    ))
-
-    c.append((f"A{REVIEW_LABEL_ROW}", "Needs review — High-risk briefings"))
-    c.append((
-        f"A{REVIEW_QUERY_ROW}",
-        f"=IFERROR(QUERY({B}!A1:N,\"select A, B, C, D, E, K, M where G = 'Yes' order by A desc\",1),"
-        '"No High-risk briefings yet")',
-    ))
+        c.append((f"F{SCRAPER_HEADER_ROW}", "Document archive"))
+        c.append((f"F{SCRAPER_VALUE_ROW}", f'=HYPERLINK("{archive_url}","Open the Regulatory Archive")'))
     return c
 
 
-def _rect(sheet_id, a1_start_row, a1_end_row, start_col, end_col):
-    """1-based inclusive rows, 0-based column indexes [start_col, end_col)."""
-    return {
-        "sheetId": sheet_id,
-        "startRowIndex": a1_start_row - 1,
-        "endRowIndex": a1_end_row,
-        "startColumnIndex": start_col,
-        "endColumnIndex": end_col,
-    }
-
-
-def _bar_chart(sheet_id, title, domain_rect, series_rect, anchor_col, kind="COLUMN"):
-    return {"addChart": {"chart": {
-        "spec": {
-            "title": title,
-            "basicChart": {
-                "chartType": kind,
-                "legendPosition": "NO_LEGEND",
-                "headerCount": 1,
-                "domains": [{"domain": {"sourceRange": {"sources": [domain_rect]}}}],
-                "series": [{"series": {"sourceRange": {"sources": [series_rect]}}, "targetAxis": "LEFT_AXIS"}],
-            },
-        },
-        "position": {"overlayPosition": {
-            "anchorCell": {"sheetId": sheet_id, "rowIndex": CHARTS_ANCHOR_ROW - 1, "columnIndex": anchor_col},
-            "widthPixels": 330, "heightPixels": 290,
-        }},
-    }}}
-
-
-def _pie_chart(sheet_id, title, domain_rect, series_rect, anchor_col):
-    return {"addChart": {"chart": {
-        "spec": {
-            "title": title,
-            "pieChart": {
-                "legendPosition": "RIGHT_LEGEND",
-                "domain": {"sourceRange": {"sources": [domain_rect]}},
-                "series": {"sourceRange": {"sources": [series_rect]}},
-            },
-        },
-        "position": {"overlayPosition": {
-            "anchorCell": {"sheetId": sheet_id, "rowIndex": CHARTS_ANCHOR_ROW - 1, "columnIndex": anchor_col},
-            "widthPixels": 330, "heightPixels": 290,
-        }},
-    }}}
+def _rect(sheet_id, r0, r1, c0, c1):
+    """1-based inclusive rows, 0-based column indexes [c0, c1)."""
+    return {"sheetId": sheet_id, "startRowIndex": r0 - 1, "endRowIndex": r1,
+            "startColumnIndex": c0, "endColumnIndex": c1}
 
 
 def build_requests(sheet_id: int):
-    r = SMALL_TABLES_ROW
     requests = []
-
-    # Charts: regulator (A:B), month (D:E), risk (G:H); header row included.
-    requests.append(_bar_chart(sheet_id, "Briefings by regulator",
-                               _rect(sheet_id, r, r + 3, 0, 1), _rect(sheet_id, r, r + 3, 1, 2), anchor_col=0))
-    requests.append(_bar_chart(sheet_id, "Briefings by month",
-                               _rect(sheet_id, r, r + 12, 3, 4), _rect(sheet_id, r, r + 12, 4, 5), anchor_col=4))
-    requests.append(_pie_chart(sheet_id, "By risk level",
-                               _rect(sheet_id, r + 1, r + 3, 6, 7), _rect(sheet_id, r + 1, r + 3, 7, 8), anchor_col=8))
 
     def fmt(rect, cell_format, fields):
         return {"repeatCell": {"range": rect, "cell": {"userEnteredFormat": cell_format}, "fields": fields}}
 
-    # Title
-    requests.append(fmt(_rect(sheet_id, 1, 1, 0, 1), {"textFormat": {"bold": True, "fontSize": 18}}, "userEnteredFormat.textFormat"))
-    requests.append(fmt(_rect(sheet_id, 2, 2, 0, 1), {"textFormat": {"italic": True, "foregroundColor": {"red": 0.5, "green": 0.55, "blue": 0.55}}},
-                        "userEnteredFormat.textFormat"))
-    # KPI labels + values
-    requests.append(fmt(_rect(sheet_id, 3, 3, 0, 9), {"backgroundColor": DARK, "horizontalAlignment": "CENTER", "wrapStrategy": "WRAP",
-                                                      "textFormat": {"bold": True, "foregroundColor": WHITE, "fontSize": 9}},
-                        "userEnteredFormat(backgroundColor,horizontalAlignment,wrapStrategy,textFormat)"))
-    requests.append(fmt(_rect(sheet_id, 4, 4, 0, 9), {"backgroundColor": LIGHT, "horizontalAlignment": "CENTER",
-                                                      "textFormat": {"bold": True, "fontSize": 16}},
-                        "userEnteredFormat(backgroundColor,horizontalAlignment,textFormat)"))
-    # Section labels
-    for row, col in [(r - 1, 0), (r - 1, 3), (r - 1, 6), (r - 1, 9), (CHARTS_ANCHOR_ROW - 1, 0), (LATEST_LABEL_ROW, 0), (REVIEW_LABEL_ROW, 0)]:
-        requests.append(fmt(_rect(sheet_id, row, row, col, col + 1), {"textFormat": {"bold": True, "fontSize": 12}}, "userEnteredFormat.textFormat"))
-    # Table header rows
-    for c0, c1 in [(0, 2), (3, 5), (6, 8), (9, 12)]:
-        requests.append(fmt(_rect(sheet_id, r, r, c0, c1), {"backgroundColor": DARK, "textFormat": {"bold": True, "foregroundColor": WHITE}},
-                            "userEnteredFormat(backgroundColor,textFormat)"))
-    requests.append(fmt(_rect(sheet_id, LATEST_QUERY_ROW, LATEST_QUERY_ROW, 0, 8), {"backgroundColor": DARK, "textFormat": {"bold": True, "foregroundColor": WHITE}},
-                        "userEnteredFormat(backgroundColor,textFormat)"))
-    requests.append(fmt(_rect(sheet_id, REVIEW_QUERY_ROW, REVIEW_QUERY_ROW, 0, 7), {"backgroundColor": RED_BG, "textFormat": {"bold": True}},
-                        "userEnteredFormat(backgroundColor,textFormat)"))
-    # Date formats
-    requests.append(fmt(_rect(sheet_id, r + 1, r + 12, 3, 4), {"numberFormat": {"type": "DATE", "pattern": "mmm yyyy"}}, "userEnteredFormat.numberFormat"))
-    requests.append(fmt(_rect(sheet_id, LATEST_QUERY_ROW + 1, LATEST_QUERY_ROW + 15, 0, 1), {"numberFormat": {"type": "DATE", "pattern": "yyyy-mm-dd"}},
-                        "userEnteredFormat.numberFormat"))
-    requests.append(fmt(_rect(sheet_id, REVIEW_QUERY_ROW + 1, REVIEW_QUERY_ROW + 300, 0, 1), {"numberFormat": {"type": "DATE", "pattern": "yyyy-mm-dd"}},
-                        "userEnteredFormat.numberFormat"))
+    def cond(rect, condition, fmt_):
+        return {"addConditionalFormatRule": {"index": 0, "rule": {
+            "ranges": [rect], "booleanRule": {"condition": condition, "format": fmt_}}}}
 
-    # Column widths: A..L
-    for idx, px in enumerate([150, 130, 120, 160, 260, 130, 150, 140, 110, 110, 110, 110]):
+    # Title / subtitle
+    requests.append(fmt(_rect(sheet_id, 1, 1, 0, 1), {"textFormat": {"bold": True, "fontSize": 18}}, "userEnteredFormat.textFormat"))
+    requests.append(fmt(_rect(sheet_id, 2, 2, 0, 1), {"textFormat": {"italic": True, "foregroundColor": GRAY_TEXT}},
+                        "userEnteredFormat.textFormat"))
+
+    # Cards
+    requests.append(fmt(_rect(sheet_id, CARDS_LABEL_ROW, CARDS_LABEL_ROW, 0, 5),
+                        {"backgroundColor": DARK, "horizontalAlignment": "CENTER", "verticalAlignment": "MIDDLE", "wrapStrategy": "WRAP",
+                         "textFormat": {"bold": True, "foregroundColor": WHITE, "fontSize": 10}},
+                        "userEnteredFormat(backgroundColor,horizontalAlignment,verticalAlignment,wrapStrategy,textFormat)"))
+    requests.append(fmt(_rect(sheet_id, CARDS_VALUE_ROW, CARDS_VALUE_ROW, 0, 5),
+                        {"backgroundColor": LIGHT, "horizontalAlignment": "CENTER", "verticalAlignment": "MIDDLE",
+                         "textFormat": {"bold": True, "fontSize": 20}},
+                        "userEnteredFormat(backgroundColor,horizontalAlignment,verticalAlignment,textFormat)"))
+    # Colour only when it matters: amber = needs assessment, red = high-risk / overdue.
+    gt0 = {"type": "NUMBER_GREATER", "values": [{"userEnteredValue": "0"}]}
+    requests.append(cond(_rect(sheet_id, CARDS_VALUE_ROW, CARDS_VALUE_ROW, 0, 1), gt0, {"backgroundColor": AMBER_BG}))
+    requests.append(cond(_rect(sheet_id, CARDS_VALUE_ROW, CARDS_VALUE_ROW, 2, 3), gt0, {"backgroundColor": RED_BG, "textFormat": {"foregroundColor": RED_TEXT}}))
+    requests.append(cond(_rect(sheet_id, CARDS_VALUE_ROW, CARDS_VALUE_ROW, 3, 4), gt0, {"backgroundColor": RED_BG, "textFormat": {"foregroundColor": RED_TEXT}}))
+    requests.append(cond(_rect(sheet_id, CARDS_VALUE_ROW, CARDS_VALUE_ROW, 4, 5), gt0, {"backgroundColor": AMBER_BG}))
+
+    # Section labels
+    for row in (ACTION_LABEL_ROW, SCRAPER_LABEL_ROW):
+        requests.append(fmt(_rect(sheet_id, row, row, 0, 1), {"textFormat": {"bold": True, "fontSize": 13}}, "userEnteredFormat.textFormat"))
+    requests.append(fmt(_rect(sheet_id, ACTION_LABEL_ROW, ACTION_LABEL_ROW, 3, 4),
+                        {"textFormat": {"italic": True, "foregroundColor": GRAY_TEXT}}, "userEnteredFormat.textFormat"))
+
+    # Action table
+    requests.append(fmt(_rect(sheet_id, ACTION_HEADER_ROW, ACTION_HEADER_ROW, 0, 7),
+                        {"backgroundColor": DARK, "textFormat": {"bold": True, "foregroundColor": WHITE}},
+                        "userEnteredFormat(backgroundColor,textFormat)"))
+    requests.append(fmt(_rect(sheet_id, ACTION_FIRST_ROW, ACTION_LAST_ROW, 0, 7),
+                        {"verticalAlignment": "TOP", "wrapStrategy": "WRAP"}, "userEnteredFormat(verticalAlignment,wrapStrategy)"))
+    requests.append(fmt(_rect(sheet_id, ACTION_FIRST_ROW, ACTION_LAST_ROW, 4, 5),
+                        {"numberFormat": {"type": "DATE", "pattern": "yyyy-mm-dd"}}, "userEnteredFormat.numberFormat"))
+    first, last = ACTION_FIRST_ROW, ACTION_LAST_ROW
+    requests.append(cond(_rect(sheet_id, first, last, 0, 1),
+                         {"type": "TEXT_EQ", "values": [{"userEnteredValue": "High"}]},
+                         {"textFormat": {"bold": True, "foregroundColor": RED_TEXT}}))
+    requests.append(cond(_rect(sheet_id, first, last, 4, 5),
+                         {"type": "CUSTOM_FORMULA", "values": [{"userEnteredValue": f"=AND(ISNUMBER($E{first}),$E{first}<TODAY())"}]},
+                         {"backgroundColor": RED_BG, "textFormat": {"bold": True, "foregroundColor": RED_TEXT}}))
+    requests.append(cond(_rect(sheet_id, first, last, 5, 6),
+                         {"type": "TEXT_EQ", "values": [{"userEnteredValue": "For Assessment"}]},
+                         {"backgroundColor": AMBER_BG}))
+
+    # Scraper line
+    requests.append(fmt(_rect(sheet_id, SCRAPER_HEADER_ROW, SCRAPER_HEADER_ROW, 0, 7),
+                        {"textFormat": {"bold": True, "foregroundColor": GRAY_TEXT, "fontSize": 9}}, "userEnteredFormat.textFormat"))
+    requests.append(fmt(_rect(sheet_id, SCRAPER_VALUE_ROW, SCRAPER_VALUE_ROW, 0, 7),
+                        {"textFormat": {"fontSize": 11}, "horizontalAlignment": "LEFT"}, "userEnteredFormat(textFormat,horizontalAlignment)"))
+    requests.append(cond(_rect(sheet_id, SCRAPER_VALUE_ROW, SCRAPER_VALUE_ROW, 4, 5), gt0,
+                         {"backgroundColor": RED_BG, "textFormat": {"foregroundColor": RED_TEXT, "bold": True}}))
+    requests.append(cond(_rect(sheet_id, SCRAPER_VALUE_ROW, SCRAPER_VALUE_ROW, 2, 3),
+                         {"type": "TEXT_CONTAINS", "values": [{"userEnteredValue": "failed"}]},
+                         {"textFormat": {"foregroundColor": RED_TEXT, "bold": True}}))
+
+    # Column widths: A..G (Title, last, is the wide one)
+    for idx, px in enumerate([120, 110, 160, 130, 120, 150, 460]):
         requests.append({"updateDimensionProperties": {
             "range": {"sheetId": sheet_id, "dimension": "COLUMNS", "startIndex": idx, "endIndex": idx + 1},
-            "properties": {"pixelSize": px}, "fields": "pixelSize",
-        }})
+            "properties": {"pixelSize": px}, "fields": "pixelSize"}})
+    requests.append({"updateDimensionProperties": {
+        "range": {"sheetId": sheet_id, "dimension": "ROWS", "startIndex": CARDS_LABEL_ROW - 1, "endIndex": CARDS_LABEL_ROW},
+        "properties": {"pixelSize": 36}, "fields": "pixelSize"}})
+    requests.append({"updateDimensionProperties": {
+        "range": {"sheetId": sheet_id, "dimension": "ROWS", "startIndex": CARDS_VALUE_ROW - 1, "endIndex": CARDS_VALUE_ROW},
+        "properties": {"pixelSize": 48}, "fields": "pixelSize"}})
     requests.append({"updateSheetProperties": {
         "properties": {"sheetId": sheet_id, "gridProperties": {"hideGridlines": True}},
-        "fields": "gridProperties.hideGridlines",
-    }})
-
-    # Conditional format: highlight High risk in the "Latest 15" Risk column (F).
-    requests.append({"addConditionalFormatRule": {"index": 0, "rule": {
-        "ranges": [_rect(sheet_id, LATEST_QUERY_ROW + 1, LATEST_QUERY_ROW + 15, 5, 6)],
-        "booleanRule": {
-            "condition": {"type": "TEXT_EQ", "values": [{"userEnteredValue": "High"}]},
-            "format": {"backgroundColor": RED_BG, "textFormat": {"bold": True}},
-        },
-    }}})
+        "fields": "gridProperties.hideGridlines"}})
     return requests
 
 
+def demo_rows(today=None):
+    """Seven clearly-marked rows that exercise every card and the table order.
+    Regulator is 'DEMO', so they can be found and removed again."""
+    today = today or datetime.now()
+    d = lambda days: (today + timedelta(days=days)).strftime("%Y-%m-%d")  # noqa: E731
+    base = ["DEMO", "TEST"]
+
+    def row(n, title, risk, appl, action, owner, due, status):
+        return [d(0), *base, f"DEMO-{n}", f"DEMO — {title}", risk, "Yes" if risk == "High" else "No", "Sample summary.", "Sample impact.",
+                "Sample impact.", "Sample action.", "—", "https://example.com", "complete",
+                appl, "", action, owner, due, status]
+
+    return [
+        row(1, "High priority, not yet assessed", "High", "", "", "", "", "For Assessment"),
+        row(2, "Medium priority, not yet assessed", "Medium", "", "", "", "", "For Assessment"),
+        row(3, "Applicable, High, OVERDUE", "High", "Yes", "File amended return", "Maria", d(-10), "Action Required"),
+        row(4, "Applicable, due in 10 days", "Medium", "Yes", "Update policy", "Jun", d(10), "In Progress"),
+        row(5, "Partially applicable, no due date", "Low", "Partially", "Review clause 4", "", "", "Action Required"),
+        row(6, "Not applicable (should not appear)", "High", "No", "", "", "", "Not Applicable"),
+        row(7, "Closed (should not appear)", "Medium", "Yes", "Done", "Maria", d(-30), "Closed"),
+    ]
+
+
+def _handle_demo(ws, mode):
+    if mode == "add":
+        existing = {v.strip() for v in ws.col_values(4)[1:]}
+        rows = [r for r in demo_rows() if r[3] not in existing]
+        if rows:
+            ws.append_rows(rows, value_input_option="USER_ENTERED", table_range="A1")
+        print(f"Added {len(rows)} DEMO row(s) to '{B}'. Remove them with --demo remove.")
+    elif mode == "remove":
+        regulators = ws.col_values(2)
+        to_delete = [i + 1 for i, v in enumerate(regulators) if i > 0 and v.strip().upper() == "DEMO"]
+        for row_number in reversed(to_delete):
+            ws.delete_rows(row_number)
+        print(f"Removed {len(to_delete)} DEMO row(s) from '{B}'.")
+
+
 def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument("--demo", choices=["none", "add", "remove"], default="none",
+                        help="Add or remove clearly-marked DEMO rows for checking the layout.")
+    args = parser.parse_args()
+
     reader = SheetsConfigReader()
     writer = DashboardWriter(reader)
     if not writer.enabled:
@@ -245,10 +294,14 @@ def main() -> int:
 
     ss = writer._spreadsheet()
 
-    # The tabs the formulas read from must exist first (they're created with
-    # their headers if missing; existing data is never touched).
-    writer.ensure_briefings_tab(ss)
+    # Briefings: create if missing, otherwise upgrade in place (headers,
+    # team columns, dropdowns) -- data rows are never touched.
+    briefings_ws = writer.upgrade_briefings_tab(ss)
     writer.ensure_health_tab(ss)
+    print(f"'{B}' tab is up to date ({len(BRIEFINGS_HEADERS)} columns).")
+
+    if args.demo != "none":
+        _handle_demo(briefings_ws, args.demo)
 
     import gspread
 
@@ -258,14 +311,11 @@ def main() -> int:
     except gspread.exceptions.WorksheetNotFound:
         pass
 
-    ws = ss.add_worksheet(title=DASHBOARD_TAB, rows=400, cols=14, index=0)
-
+    ws = ss.add_worksheet(title=DASHBOARD_TAB, rows=60, cols=8, index=0)
     data = [{"range": addr, "values": [[val]]} for addr, val in _cells()]
     ws.batch_update(data, value_input_option="USER_ENTERED")
-
     ss.batch_update({"requests": build_requests(ws.id)})
-    print(f"Built the '{DASHBOARD_TAB}' tab with {len(data)} cells and 3 charts.")
-    print("It's the first tab. Open the Sheet to see it (it fills in as briefings are logged).")
+    print(f"Built the '{DASHBOARD_TAB}' tab ({len(data)} cells). It's the first tab.")
     return 0
 
 
