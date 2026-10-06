@@ -1,8 +1,11 @@
 # Manual, on-demand: (re)builds the "Dashboard" tab in the configuration
-# Google Sheet -- KPI cards, counts, charts, latest briefings, needs-review
-# list. Run it once after uploading the dashboard code; re-run it any time to
-# rebuild the tab (this deletes and recreates ONLY the Dashboard tab -- the
-# Briefings log and Health tabs are never touched).
+# Google Sheet (five oversight cards + Action Required table + scraper line)
+# and upgrades the "Briefings" tab to the current layout (header row, the
+# team's six columns and their dropdowns -- data rows are never touched).
+# Re-running deletes and recreates ONLY the Dashboard tab.
+#
+# demo = add: also appends 7 sample rows (Regulator "DEMO") so you can check
+# the layout; demo = remove deletes them again.
 #
 # Needs the service account to have EDITOR access to the Sheet.
 # Costs nothing: no scraping, no proxy, no AI calls.
@@ -11,6 +14,15 @@ name: Setup Dashboard Tab
 
 on:
   workflow_dispatch:
+    inputs:
+      demo:
+        description: 'Sample rows for checking the layout (they are marked DEMO)'
+        type: choice
+        default: 'none'
+        options:
+          - 'none'
+          - 'add'
+          - 'remove'
 
 jobs:
   setup-dashboard:
@@ -36,4 +48,4 @@ jobs:
           GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
           SHEET_ID: ${{ secrets.SHEET_ID }}
           ARCHIVE_FOLDER_URL: ${{ secrets.ARCHIVE_FOLDER_URL }}
-        run: python tools/setup_dashboard.py
+        run: python tools/setup_dashboard.py --demo ${{ inputs.demo || 'none' }}
