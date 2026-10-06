@@ -40,6 +40,12 @@ class EmailNotificationChannel:
 
         self.recipient_matrix = recipient_matrix or {}
 
+        # Optional: link to the shared Google Drive archive folder, shown in
+        # every email so recipients know the archive exists and where it is.
+        # Unset (or not https) -> the line is simply omitted.
+        archive_url = os.getenv("ARCHIVE_FOLDER_URL", "").strip()
+        self.archive_folder_url = archive_url if archive_url.startswith("https://") else ""
+
         if default_recipients is not None:
             self.default_recipients = default_recipients
         else:
@@ -175,9 +181,22 @@ class EmailNotificationChannel:
             started successfully. Monitoring will continue throughout the day, and
             you will receive a separate email immediately whenever a new relevant
             issuance is detected.</p>
+            {self._archive_note_html()}
         </body></html>
         """
         return self._send(subject, html_body, recipients)
+
+    def _archive_note_html(self) -> str:
+        """One line telling recipients where every issuance document is kept."""
+        if not self.archive_folder_url:
+            return ""
+        href = html.escape(self.archive_folder_url, quote=True)
+        return (
+            '<p style="background-color: #f7f9fa; padding: 8px 12px; border-radius: 4px;">'
+            "All issuance documents are archived in our shared Google Drive, organized by regulator and type: "
+            f'<a href="{href}">Open the Regulatory Archive</a>.'
+            "</p>"
+        )
 
     @staticmethod
     def _field(value: str) -> str:
@@ -327,6 +346,7 @@ class EmailNotificationChannel:
                 <tr>{header_html}</tr>
                 {row_html}
             </table>
+            {self._archive_note_html()}
             <p style="font-size: 12px; color: #7f8c8d;">
                 {degraded_note}This is an automated notification from the Regulatory Scraper.
             </p>
