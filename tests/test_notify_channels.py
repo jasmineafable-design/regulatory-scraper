@@ -1,5 +1,6 @@
+import email
 import re
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 from core.notify_channels import EmailNotificationChannel
 from models.issuance import BriefingRecord
@@ -78,7 +79,7 @@ def test_digest_only_reports_success_for_groups_that_actually_sent():
     ok_briefing = _briefing(regulator="BIR", category="RMC", identifier="RMC No. 1-2026")
     failing_briefing = _briefing(regulator="IC", category="IC-CL", identifier="CL-2026-005")
 
-    def fake_send(subject, html_body, recipients):
+    def fake_send(subject, html_body, recipients, attachments=None):
         return recipients == ["tax@x.com"]
 
     with patch.object(channel, "_send", side_effect=fake_send):
@@ -114,6 +115,80 @@ def test_falls_back_to_default_when_regulator_unmatched():
         default_recipients=["fallback@x.com"],
     )
     assert channel._recipients_for("SEC", "SEC-MC") == ["fallback@x.com"]
+
+
+# --- Attachment tests, 2026-10-06 (archive = email attachment) ------------
+
+
+def _with_doc(identifier="RMC No. 1-2026", size=10, name=None, **overrides):
+    return _briefing(
+        identifier=identifier,
+        archived_document_link="Attached to this email",
+        attachment_filename=name or f"{identifier.replace(' ', '_')}.pdf",
+        attachment_content_type="application/pdf",
+        attachment_bytes=b"%" * size,
+        **overrides,
+    )
+
+
+def _sent_message(channel, briefings):
+    """Runs the real digest send with SMTP mocked, returns the parsed email."""
+    channel.sender_email = "bot@x.com"
+    channel.sender_password = "pw"
+    smtp = MagicMock()
+    with patch("core.notify_channels.smtplib.SMTP") as smtp_cls:
+        smtp_cls.return_value.__enter__.return_value = smtp
+        channel.send_regulatory_briefing_digest(briefings)
+    raw = smtp.sendmail.call_args.args[2]
+    return email.message_from_string(raw)
+
+
+def test_digest_email_carries_documents_as_attachments():
+    channel = EmailNotificationChannel(default_recipients=["ops@x.com"])
+    msg = _sent_message(channel, [_with_doc("RMC No. 1-2026"), _with_doc("RMC No. 2-2026")])
+
+    assert msg.get_content_type() == "multipart/mixed"
+    names = [p.get_filename() for p in msg.walk() if p.get_filename()]
+    assert names == ["RMC_No._1-2026.pdf", "RMC_No._2-2026.pdf"]
+    body = next(p for p in msg.walk() if p.get_content_type() == "text/html")
+    assert "Attached" in body.get_payload(decode=True).decode()
+
+
+def test_digest_email_without_documents_stays_plain():
+    channel = EmailNotificationChannel(default_recipients=["ops@x.com"])
+    msg = _sent_message(channel, [_briefing()])
+
+    assert msg.get_content_type() == "multipart/alternative"
+    assert not [p for p in msg.walk() if p.get_filename()]
+
+
+def test_duplicate_attachment_filenames_are_made_unique():
+    channel = EmailNotificationChannel(default_recipients=["ops@x.com"])
+    briefings = [
+        _with_doc("RMC No. 1-2026", name="same.pdf"),
+        _with_doc("RMC No. 2-2026", name="same.pdf"),
+    ]
+
+    attachments, not_attached = channel._collect_attachments(briefings)
+
+    assert [a[0] for a in attachments] == ["same.pdf", "same_2.pdf"]
+    assert not_attached == set()
+
+
+def test_documents_past_total_size_cap_are_left_off_and_flagged():
+    channel = EmailNotificationChannel(default_recipients=["ops@x.com"])
+    half = channel.MAX_TOTAL_ATTACHMENT_BYTES // 2 + 1
+    briefings = [
+        _with_doc("RMC No. 1-2026", size=half),
+        _with_doc("RMC No. 2-2026", size=half),  # would push total over the cap
+    ]
+
+    attachments, not_attached = channel._collect_attachments(briefings)
+    html_out = channel._build_digest_html(briefings, not_attached_ids=not_attached)
+
+    assert len(attachments) == 1
+    assert not_attached == {"RMC No. 2-2026"}
+    assert "Too large to attach" in html_out
 
 
 # --- Regression tests, 2026-09-04 table-width review ---------------------
