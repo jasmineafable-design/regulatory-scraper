@@ -232,3 +232,27 @@ def test_official_source_link_text_is_short_not_the_raw_url():
 
     assert f'href="{long_url}">View source</a>' in html
     assert long_url not in html.split("View source")[0].rsplit("href=", 1)[-1][: len(long_url) - 5]
+
+
+# --- Archive folder link in every email, 2026-10-07 ----------------------
+
+
+def test_emails_link_to_the_archive_folder_when_configured(monkeypatch):
+    monkeypatch.setenv("ARCHIVE_FOLDER_URL", "https://drive.google.com/drive/folders/ABC123")
+    channel = EmailNotificationChannel(default_recipients=["x@y.z"])
+
+    digest = channel._build_digest_html([_briefing()])
+    assert 'href="https://drive.google.com/drive/folders/ABC123">Open the Regulatory Archive</a>' in digest
+
+    sent = {}
+    channel.sender_email, channel.sender_password = "bot@x.com", "pw"
+    with patch.object(channel, "_send", side_effect=lambda s, body, r, attachments=None: sent.update(body=body) or True):
+        channel.send_daily_monitoring_report("opening check")
+    assert "Open the Regulatory Archive" in sent["body"]
+
+
+def test_no_archive_line_when_url_unset_or_not_https(monkeypatch):
+    for value in ["", "http://insecure.example/folder", "javascript:alert(1)"]:
+        monkeypatch.setenv("ARCHIVE_FOLDER_URL", value)
+        channel = EmailNotificationChannel(default_recipients=["x@y.z"])
+        assert "Regulatory Archive" not in channel._build_digest_html([_briefing()])

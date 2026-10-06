@@ -248,3 +248,14 @@ def test_setup_dashboard_cells_and_requests_are_well_formed():
     charts = [r for r in requests if "addChart" in r]
     assert len(charts) == 3
     assert all("sheetId" in str(r) for r in requests)
+
+
+def test_dashboard_has_archive_link_only_when_configured(monkeypatch):
+    from tools import setup_dashboard as sd
+
+    monkeypatch.setenv("ARCHIVE_FOLDER_URL", "https://drive.google.com/drive/folders/ABC123")
+    cells = dict(sd._cells())
+    assert cells["I4"] == '=HYPERLINK("https://drive.google.com/drive/folders/ABC123","Open the Regulatory Archive")'
+
+    monkeypatch.setenv("ARCHIVE_FOLDER_URL", "")
+    assert "I4" not in dict(sd._cells())
