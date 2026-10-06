@@ -4,21 +4,29 @@ Archive step (Foundation §3.6/§4.4, Phase 5).
 Best-effort document archiving (Foundation §3.9: "Not a full document
 management system -- archiving is convenience, not records-management").
 
+How archiving works now (changed 2026-10-06): this step fetches the source
+document and hands its bytes back so the email channel can ATTACH it to the
+briefing (core/notify_channels.py). It no longer uploads anywhere itself.
+The Google Drive upload was dropped because a service account has no storage
+quota in a normal "My Drive" folder (confirmed live 2026-09-30), and the only
+fix -- a Shared Drive -- needs a Workspace admin, i.e. IT. The email itself is
+now the archive: recipients open the file directly, and a copy sits in the
+sending mailbox's Sent folder. An optional Google Apps Script in Jas's own
+account can copy attachments into her Drive (docs/Drive-Attachment-Copier.gs).
+
 Approved best-effort failure behavior (frozen, §3.8, same rule Phase 4/Assess
-follows): if this fails for any reason (missing config, network error, Drive
-API error), Compose must still produce a Briefing Record from deterministic
-data alone, with the missing section explicitly marked -- never silently
+follows): if this fails for any reason (network error, proxy error, file too
+large), Compose must still produce a Briefing Record from deterministic data
+alone, with the missing section explicitly marked -- never silently
 incomplete, never withheld. This module enforces that by never raising:
 archive() always returns an ArchiveResult, with .succeeded=False and an
 .error on any failure.
 """
 
-import json
 import logging
 import mimetypes
-import os
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Optional
 
 from core.http_client import ScrapingHttpClient
@@ -34,18 +42,14 @@ logger = logging.getLogger(__name__)
 # for IC/SEC got a 403, while BIR (not proxy-gated) had no such failures.
 PROXY_REQUIRED_REGULATORS = {"IC", "SEC"}
 
-DRIVE_UPLOAD_URL = (
-    "https://www.googleapis.com/upload/drive/v3/files"
-    "?uploadType=multipart&fields=id,webViewLink"
-)
-DRIVE_PERMISSIONS_URL_TEMPLATE = "https://www.googleapis.com/drive/v3/files/{file_id}/permissions"
+# Per-document cap. Gmail rejects messages over ~25 MB in total, and one
+# digest email can carry several documents, so a single file is capped well
+# below that. An over-cap document is treated as an archive failure (field
+# marked UNAVAILABLE, briefing still goes out with the official source link).
+MAX_ATTACHMENT_BYTES = 8 * 1024 * 1024
 
-# drive.file (not the broader "drive" scope) -- the service account only
-# needs to create/manage files it itself creates inside the configured
-# folder, not read/write everything in the account's Drive (§3.9: archiving
-# is convenience, not a document-management system -- least-privilege access
-# matches that framing).
-DRIVE_SCOPES = ["https://www.googleapis.com/auth/drive.file"]
+# Text shown in the briefing's "Archived Copy" column on success.
+ATTACHED_LABEL = "Attached to this email"
 
 _SAFE_NAME_RE = re.compile(r"[^A-Za-z0-9._-]+")
 
@@ -57,15 +61,10 @@ def _describe_exception(err: BaseException, max_depth: int = 4) -> str:
     Duplicated rather than imported to keep this module's only real
     dependencies scoped to what Archive itself needs.
 
-    For an HTTPError specifically (e.g. a Drive API 403), requests'
+    For an HTTPError specifically (e.g. a proxy-relayed 403), requests'
     raise_for_status() only puts the generic "403 Client Error: Forbidden
-    for url: ..." into str(err) -- it drops the JSON error body Google
-    actually sends back (e.g. "insufficient permissions for the specified
-    parent", "Drive API has not been used in project ... before or it is
-    disabled", "Service Accounts do not have storage quota"), which is
-    exactly the detail needed to tell those failure modes apart. So this
-    also appends response.text (truncated) whenever the exception carries
-    an HTTP response."""
+    for url: ..." into str(err), so this also appends response.text
+    (truncated) whenever the exception carries an HTTP response."""
     parts = []
     seen = set()
     current: Optional[BaseException] = err
@@ -88,9 +87,9 @@ def _describe_exception(err: BaseException, max_depth: int = 4) -> str:
 
 
 def _safe_filename(candidate: CandidateIssuance, content_type: Optional[str]) -> str:
-    """Builds a Drive-safe filename from the issuance identifier, with an
-    extension guessed from the response's Content-Type (falls back to no
-    extension if the type is unrecognized -- Drive still stores/opens the
+    """Builds an attachment-safe filename from the issuance identifier, with
+    an extension guessed from the response's Content-Type (falls back to no
+    extension if the type is unrecognized -- mail clients still save/open the
     file fine without one)."""
     base = f"{candidate.source_regulator}-{candidate.source_category}-{candidate.issuance_identifier}"
     base = _SAFE_NAME_RE.sub("_", base).strip("_")[:150] or "issuance"
@@ -103,99 +102,49 @@ class ArchiveResult:
     succeeded: bool
     archived_document_link: str = "UNAVAILABLE"
     error: Optional[str] = None
+    # Populated only on success: the fetched document, to be attached to the
+    # briefing email by the notification channel.
+    attachment_filename: Optional[str] = None
+    attachment_content_type: Optional[str] = None
+    attachment_bytes: Optional[bytes] = field(default=None, repr=False)
 
 
 class Archiver:
-    """Best-effort document archiving to Google Drive (Phase 5).
+    """Best-effort document fetch-for-attachment (Phase 5).
 
-    Reuses the same GOOGLE_SERVICE_ACCOUNT_JSON credential already used for
-    Sheets config (core/sheets_config.py), authenticating via google-auth's
-    AuthorizedSession and calling the Drive API v3 REST endpoints directly --
-    avoids adding google-api-python-client as a new dependency, consistent
-    with this codebase's minimal-dependency convention (gspread + google-auth
-    are already required for Sheets).
-
-    Gated exactly like SheetsConfigReader: if GOOGLE_SERVICE_ACCOUNT_JSON or
-    DRIVE_FOLDER_ID isn't configured, every call returns a documented
-    unavailable result rather than raising -- Archive is explicitly
-    non-authoritative and best-effort (§3.9), never blocking the briefing.
-
-    Uploaded files are set to "anyone with the link can view" (confirmed with
-    Jas 2026-09-28): Sources-sheet recipients are arbitrary business emails,
-    not necessarily all in one Google Workspace domain the service account
-    could instead share a private folder with, and these are public
-    regulator issuances (BIR/IC/SEC), so link-visibility is an acceptable
-    trade-off for recipients being able to open the link at all.
+    Needs no credentials of its own. IC/SEC documents are fetched through the
+    same SCRAPER_PROXY_API_KEY proxy their listing pages use; BIR is fetched
+    directly.
     """
 
-    FETCH_TIMEOUT_SEC = 30
-    UPLOAD_TIMEOUT_SEC = 60
-
-    def __init__(self, service_account_json: Optional[str] = None, folder_id: Optional[str] = None):
-        self.service_account_json = service_account_json or os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON")
-        self.folder_id = folder_id or os.getenv("DRIVE_FOLDER_ID")
-        self._session = None
+    def __init__(self):
         self.http_client = ScrapingHttpClient()
-
-    def _get_session(self):
-        if self._session is None:
-            from google.auth.transport.requests import AuthorizedSession  # imported lazily: optional dependency
-            from google.oauth2 import service_account
-
-            # Same "raw JSON text vs. real file path" detection as
-            # SheetsConfigReader.__init__ (core/sheets_config.py) -- the
-            # README documents pasting the whole JSON key file contents into
-            # the GitHub secret, not a path to a file that doesn't exist on
-            # the runner.
-            try:
-                credentials_dict = json.loads(self.service_account_json)
-                credentials = service_account.Credentials.from_service_account_info(
-                    credentials_dict, scopes=DRIVE_SCOPES
-                )
-            except json.JSONDecodeError:
-                credentials = service_account.Credentials.from_service_account_file(
-                    self.service_account_json, scopes=DRIVE_SCOPES
-                )
-            self._session = AuthorizedSession(credentials)
-        return self._session
 
     def archive(self, candidate: CandidateIssuance) -> ArchiveResult:
         """Never raises (see module docstring) -- always returns an
         ArchiveResult, succeeded=False with .error set on any failure."""
-        if not self.service_account_json or not self.folder_id:
-            return ArchiveResult(
-                succeeded=False,
-                error="GOOGLE_SERVICE_ACCOUNT_JSON/DRIVE_FOLDER_ID not configured.",
-            )
-
         try:
             use_proxy = candidate.source_regulator.upper() in PROXY_REQUIRED_REGULATORS
             doc_content, content_type = self.http_client.fetch_bytes(
                 candidate.source_regulator, candidate.source_url, use_proxy=use_proxy
             )
-            filename = _safe_filename(candidate, content_type)
 
-            session = self._get_session()
+            if not doc_content:
+                raise ValueError("Fetched document was empty.")
+            if len(doc_content) > MAX_ATTACHMENT_BYTES:
+                raise ValueError(
+                    f"Document is {len(doc_content) / (1024 * 1024):.1f} MB, over the "
+                    f"{MAX_ATTACHMENT_BYTES // (1024 * 1024)} MB per-document attachment limit."
+                )
 
-            metadata = {"name": filename, "parents": [self.folder_id]}
-            files = {
-                "metadata": ("metadata", json.dumps(metadata), "application/json; charset=UTF-8"),
-                "file": (filename, doc_content, content_type.split(";")[0].strip()),
-            }
-            upload_response = session.post(DRIVE_UPLOAD_URL, files=files, timeout=self.UPLOAD_TIMEOUT_SEC)
-            upload_response.raise_for_status()
-            uploaded = upload_response.json()
-            file_id = uploaded["id"]
-
-            permission_response = session.post(
-                DRIVE_PERMISSIONS_URL_TEMPLATE.format(file_id=file_id),
-                json={"role": "reader", "type": "anyone"},
-                timeout=self.UPLOAD_TIMEOUT_SEC,
+            clean_type = (content_type or "application/octet-stream").split(";")[0].strip()
+            return ArchiveResult(
+                succeeded=True,
+                archived_document_link=ATTACHED_LABEL,
+                attachment_filename=_safe_filename(candidate, clean_type),
+                attachment_content_type=clean_type,
+                attachment_bytes=doc_content,
             )
-            permission_response.raise_for_status()
-
-            link = uploaded.get("webViewLink") or f"https://drive.google.com/file/d/{file_id}/view"
-            return ArchiveResult(succeeded=True, archived_document_link=link)
         except Exception as e:
             # Fail-open, same rule Assess follows (§3.8): never let a
             # best-effort failure block or delay the deterministic briefing.

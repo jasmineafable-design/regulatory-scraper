@@ -30,6 +30,9 @@ class Composer:
         risk_priority_level = "UNAVAILABLE"
         suggested_action = "UNAVAILABLE"
         archived_document_link = "UNAVAILABLE"
+        attachment_filename = None
+        attachment_content_type = None
+        attachment_bytes = None
 
         # Tracks which *supplied* best-effort steps actually succeeded --
         # tracked as explicit flags rather than inferred from field values,
@@ -59,6 +62,9 @@ class Composer:
             supplied_results.append(archive_result.succeeded)
             if archive_result.succeeded:
                 archived_document_link = archive_result.archived_document_link
+                attachment_filename = archive_result.attachment_filename
+                attachment_content_type = archive_result.attachment_content_type
+                attachment_bytes = archive_result.attachment_bytes
             else:
                 logger.warning(
                     f"[{candidate.source_regulator}] Document archiving unavailable for "
@@ -86,5 +92,8 @@ class Composer:
             risk_priority_level=risk_priority_level,
             suggested_action=suggested_action,
             archived_document_link=archived_document_link,
+            attachment_filename=attachment_filename,
+            attachment_content_type=attachment_content_type,
+            attachment_bytes=attachment_bytes,
             completeness_status=completeness_status,
         )

@@ -1,6 +1,9 @@
+import html
 import os
 import smtplib
 import logging
+from email import encoders
+from email.mime.base import MIMEBase
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from typing import Dict, List, Optional, Tuple
@@ -75,14 +78,36 @@ class EmailNotificationChannel:
             logger.error(error_msg)
             raise ValueError(error_msg)
 
-    def _send(self, subject: str, html_body: str, recipients: List[str]) -> bool:
+    def _send(
+        self,
+        subject: str,
+        html_body: str,
+        recipients: List[str],
+        attachments: Optional[List[Tuple[str, str, bytes]]] = None,
+    ) -> bool:
+        """attachments: optional list of (filename, content_type, bytes)."""
         self._require_smtp_config(recipients)
 
-        msg = MIMEMultipart("alternative")
+        if attachments:
+            msg = MIMEMultipart("mixed")
+            body_part = MIMEMultipart("alternative")
+            body_part.attach(MIMEText(html_body, "html"))
+            msg.attach(body_part)
+            for filename, content_type, data in attachments:
+                maintype, _, subtype = (content_type or "").partition("/")
+                if not maintype or not subtype:
+                    maintype, subtype = "application", "octet-stream"
+                part = MIMEBase(maintype, subtype)
+                part.set_payload(data)
+                encoders.encode_base64(part)
+                part.add_header("Content-Disposition", "attachment", filename=filename)
+                msg.attach(part)
+        else:
+            msg = MIMEMultipart("alternative")
+            msg.attach(MIMEText(html_body, "html"))
         msg["Subject"] = subject
         msg["From"] = self.sender_email
         msg["To"] = ", ".join(recipients)
-        msg.attach(MIMEText(html_body, "html"))
 
         try:
             logger.info(f"Connecting to SMTP server {self.smtp_server}:{self.smtp_port}...")
@@ -128,8 +153,9 @@ class EmailNotificationChannel:
         successful: List[BriefingRecord] = []
         for recipients, group_briefings in groups.values():
             subject = self._digest_subject(group_briefings)
-            html_body = self._build_digest_html(group_briefings)
-            if self._send(subject, html_body, recipients):
+            attachments, not_attached = self._collect_attachments(group_briefings)
+            html_body = self._build_digest_html(group_briefings, not_attached_ids=not_attached)
+            if self._send(subject, html_body, recipients, attachments=attachments):
                 successful.extend(group_briefings)
             else:
                 logger.error(
@@ -159,13 +185,65 @@ class EmailNotificationChannel:
             return "<em>Not available</em>"
         return value
 
+    # Gmail rejects messages over ~25 MB; leave headroom for base64 overhead
+    # (~33%) and the HTML body. Documents past this combined size are left
+    # off the email and flagged in the table, never silently dropped.
+    MAX_TOTAL_ATTACHMENT_BYTES = 15 * 1024 * 1024
+
+    def _collect_attachments(
+        self, briefings: List[BriefingRecord]
+    ) -> Tuple[List[Tuple[str, str, bytes]], set]:
+        """Gathers each briefing's archived document for this email.
+
+        Returns (attachments, not_attached_ids). not_attached_ids holds the
+        issuance identifiers whose document had to be left off because the
+        email's combined attachment size would exceed the limit."""
+        attachments: List[Tuple[str, str, bytes]] = []
+        not_attached: set = set()
+        used_names: set = set()
+        total = 0
+        for b in briefings:
+            if not b.attachment_bytes:
+                continue
+            if total + len(b.attachment_bytes) > self.MAX_TOTAL_ATTACHMENT_BYTES:
+                not_attached.add(b.issuance_identifier)
+                continue
+            name = b.attachment_filename or "document"
+            if name in used_names:
+                stem, dot, ext = name.rpartition(".")
+                n = 2
+                while True:
+                    candidate = f"{stem}_{n}.{ext}" if dot else f"{name}_{n}"
+                    if candidate not in used_names:
+                        name = candidate
+                        break
+                    n += 1
+            used_names.add(name)
+            total += len(b.attachment_bytes)
+            attachments.append((name, b.attachment_content_type or "application/octet-stream", b.attachment_bytes))
+        return attachments, not_attached
+
+    def _archive_cell(self, b: BriefingRecord, not_attached_ids: set) -> str:
+        if b.issuance_identifier in not_attached_ids:
+            return "<em>Too large to attach</em> &mdash; use Official Source"
+        if b.attachment_bytes:
+            return (
+                "Attached<br/>"
+                f'<span style="font-size: 11px; color: #7f8c8d; word-break: break-all;">'
+                f"{html.escape(b.attachment_filename or '')}</span>"
+            )
+        return self._field(b.archived_document_link)
+
     @staticmethod
     def _digest_subject(briefings: List[BriefingRecord]) -> str:
         regulators = sorted({b.source_regulator for b in briefings})
         return f"[Regulatory Briefing] {', '.join(regulators)}: {len(briefings)} new issuance(s)"
 
-    def _build_digest_html(self, briefings: List[BriefingRecord]) -> str:
+    def _build_digest_html(
+        self, briefings: List[BriefingRecord], not_attached_ids: Optional[set] = None
+    ) -> str:
         f = self._field
+        not_attached_ids = not_attached_ids or set()
 
         counts: Dict[str, int] = {}
         for b in briefings:
@@ -222,7 +300,7 @@ class EmailNotificationChannel:
                     <td width="{w_broker}%" style="width: {w_broker}%; padding: 8px 12px; border: 1px solid #dfe3e6; vertical-align: top;">{f(b.brokerage_entity_impact)}</td>
                     <td width="{w_risk}%" style="width: {w_risk}%; padding: 8px 12px; border: 1px solid #dfe3e6; vertical-align: top;">{f(b.risk_priority_level)}</td>
                     <td width="{w_action}%" style="width: {w_action}%; padding: 8px 12px; border: 1px solid #dfe3e6; vertical-align: top;">{f(b.suggested_action)}</td>
-                    <td width="{w_archive}%" style="width: {w_archive}%; padding: 8px 12px; border: 1px solid #dfe3e6; vertical-align: top;">{f(b.archived_document_link)}</td>
+                    <td width="{w_archive}%" style="width: {w_archive}%; padding: 8px 12px; border: 1px solid #dfe3e6; vertical-align: top;">{self._archive_cell(b, not_attached_ids)}</td>
                     <td width="{w_source}%" style="width: {w_source}%; padding: 8px 12px; border: 1px solid #dfe3e6; vertical-align: top; word-break: break-all;">
                         <a href="{b.official_source_link}">View source</a>
                     </td>
