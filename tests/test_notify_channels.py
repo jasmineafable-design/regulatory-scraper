@@ -162,6 +162,15 @@ def test_digest_email_without_documents_stays_plain():
     assert not [p for p in msg.walk() if p.get_filename()]
 
 
+def test_drive_link_renders_as_a_clickable_link_not_raw_text():
+    channel = EmailNotificationChannel(default_recipients=["ops@x.com"])
+    link = "https://drive.google.com/file/d/abc/view?usp=drivesdk&x=1"
+    html_out = channel._build_digest_html([_briefing(archived_document_link=link, completeness_status="complete")])
+
+    assert 'href="https://drive.google.com/file/d/abc/view?usp=drivesdk&amp;x=1">Open in Drive</a>' in html_out
+    assert "Attached" not in html_out
+
+
 def test_duplicate_attachment_filenames_are_made_unique():
     channel = EmailNotificationChannel(default_recipients=["ops@x.com"])
     briefings = [

@@ -1,4 +1,4 @@
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import requests
 
@@ -132,6 +132,84 @@ def test_archive_fails_open_when_document_too_large_to_attach():
     assert result.succeeded is False
     assert "limit" in result.error
     assert result.attachment_bytes is None
+
+
+# --- Drive-link tier (Apps Script web app), 2026-10-07 ---------------------
+
+
+def _drive_archiver():
+    return Archiver(upload_url="https://script.google.com/macros/s/ABC/exec", upload_token="s3cret")
+
+
+def _post_response(json_body=None, json_error=False, status_error=None):
+    resp = MagicMock()
+    if status_error:
+        resp.raise_for_status.side_effect = status_error
+    else:
+        resp.raise_for_status.return_value = None
+    if json_error:
+        resp.json.side_effect = ValueError("not json")
+    else:
+        resp.json.return_value = json_body
+    return resp
+
+
+def test_archive_uploads_to_drive_and_returns_the_link_when_configured():
+    archiver = _drive_archiver()
+    drive_link = "https://drive.google.com/file/d/xyz/view"
+
+    with patch.object(archiver.http_client, "fetch_bytes", return_value=(b"%PDF-data", "application/pdf")), \
+         patch("core.archive.requests.post", return_value=_post_response({"ok": True, "url": drive_link})) as post:
+        result = archiver.archive(_candidate())
+
+    assert result.succeeded is True
+    assert result.archived_document_link == drive_link
+    assert result.attachment_bytes is None            # link replaces the attachment
+    sent = post.call_args.kwargs["json"]
+    assert sent["token"] == "s3cret"
+    assert sent["filename"] == "BIR_RMC_RMC-No-61-2026.pdf"
+    assert sent["content_type"] == "application/pdf"
+    assert sent["data"]                               # base64 document
+
+
+def test_archive_falls_back_to_attachment_when_drive_upload_fails():
+    for post_response in [
+        _post_response({"ok": False, "error": "bad token"}),
+        _post_response(json_error=True),                                        # HTML sign-in page, not JSON
+        _post_response(status_error=requests.exceptions.HTTPError("500 boom")),
+        _post_response({"ok": True, "url": ""}),
+    ]:
+        archiver = _drive_archiver()
+        with patch.object(archiver.http_client, "fetch_bytes", return_value=(b"%PDF-data", "application/pdf")), \
+             patch("core.archive.requests.post", return_value=post_response):
+            result = archiver.archive(_candidate())
+
+        assert result.succeeded is True
+        assert result.archived_document_link == ATTACHED_LABEL
+        assert result.attachment_bytes == b"%PDF-data"
+
+
+def test_archive_falls_back_to_attachment_when_drive_endpoint_unreachable():
+    archiver = _drive_archiver()
+    with patch.object(archiver.http_client, "fetch_bytes", return_value=(b"%PDF-data", "application/pdf")), \
+         patch("core.archive.requests.post", side_effect=requests.exceptions.ConnectionError("down")):
+        result = archiver.archive(_candidate())
+
+    assert result.succeeded is True
+    assert result.attachment_bytes == b"%PDF-data"
+
+
+def test_archive_does_not_call_drive_when_not_configured(monkeypatch):
+    monkeypatch.delenv("DRIVE_UPLOAD_URL", raising=False)
+    monkeypatch.delenv("DRIVE_UPLOAD_TOKEN", raising=False)
+    archiver = Archiver()
+
+    with patch.object(archiver.http_client, "fetch_bytes", return_value=(b"%PDF-data", "application/pdf")), \
+         patch("core.archive.requests.post") as post:
+        result = archiver.archive(_candidate())
+
+    post.assert_not_called()
+    assert result.attachment_bytes == b"%PDF-data"
 
 
 def test_safe_filename_sanitizes_and_adds_extension():
