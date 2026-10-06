@@ -104,6 +104,8 @@ jobs:
           SHEET_ID: ${{ secrets.SHEET_ID }}
           SCRAPER_PROXY_API_KEY: ${{ secrets.SCRAPER_PROXY_API_KEY }}
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          DRIVE_UPLOAD_URL: ${{ secrets.DRIVE_UPLOAD_URL }}
+          DRIVE_UPLOAD_TOKEN: ${{ secrets.DRIVE_UPLOAD_TOKEN }}
         run: |
           # --allow-proxy is required here: the script defaults to refusing
           # ScraperAPI so that a local run can't silently spend credits, but
