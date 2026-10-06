@@ -7,10 +7,10 @@ deterministic pipeline: Fetch -> Validate -> Detect -> Assess -> Compose -> Noti
 Anthropic API (Claude Haiku) for AI-advisory impact assessment; if
 ANTHROPIC_API_KEY is unset or the call fails for any reason, AI fields fall
 back to "UNAVAILABLE" per the frozen fail-open behavior (core/compose.py)
-rather than blocking the briefing. Archive (core/archive.py, Phase 5) uploads
-a copy of the source document to Google Drive; if GOOGLE_SERVICE_ACCOUNT_JSON/
-DRIVE_FOLDER_ID are unset or the upload fails for any reason, the archive
-link falls back to "UNAVAILABLE" the same way.
+rather than blocking the briefing. Archive (core/archive.py, Phase 5) fetches
+a copy of the source document, which the email channel attaches to the
+briefing; if the fetch fails for any reason (or the file is too large), the
+archive field falls back to "UNAVAILABLE" the same way.
 
 One adapter's failure is isolated from the others (§3.4 principle 3) but is never
 swallowed (§3.4 principle 2): failures are collected and re-raised after every
