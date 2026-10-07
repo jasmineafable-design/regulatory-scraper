@@ -38,6 +38,7 @@ from core.compose import Composer
 from core.detect import Detector
 from core.logger import setup_logger
 from core.notify import ConsoleNotificationChannel, NotificationDispatcher
+from core.owner_notify import OwnerNotifier
 from core.notify_channels import EmailNotificationChannel
 from core.schedule import resolve_run_decision
 from core.sheets_config import SheetsConfigReader
@@ -184,6 +185,9 @@ def run(
     # Human-facing view (Foundation §4.5): best-effort and after the state
     # commit, so a Sheet problem can never affect notification or state.
     dashboard.log_briefings(notified)
+    # Ask each issuance's owner (Sources tab 'Owner Email') to assess it.
+    # Only rows actually added just now; best-effort, never raises.
+    OwnerNotifier(config_reader, channel).notify(dashboard.last_added)
     dashboard.write_health_snapshot(is_opening_check, len(all_briefings), len(notified), source_status)
 
     result = {

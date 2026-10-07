@@ -122,6 +122,71 @@ class SheetsConfigReader:
                 matrix.setdefault((regulator, category), []).extend(recipients)
         return matrix
 
+    def get_weekly_summary_recipients(self) -> List[str]:
+        """Emails listed (one per row, first column) on the optional
+        'Weekly Summary Recipients' tab. Empty list if the tab/Sheet is
+        unavailable -- the weekly summary then sends nothing."""
+        from core.weekly_summary import recipients_from_values
+
+        sheet = self._worksheet("Weekly Summary Recipients")
+        if not sheet:
+            return []
+        try:
+            return recipients_from_values(sheet.get_all_values())
+        except Exception as e:
+            logger.error(f"Could not read the weekly summary recipients: {e}")
+            return []
+
+    def get_owner_email_matrix(self) -> Dict[Tuple[str, str], str]:
+        """(Regulator, Category) -> the owner's email, from an optional
+        'Owner Email' column on the Sources tab. Used to ask that person to
+        assess new briefings. Fail-open: missing column/Sheet -> empty."""
+        try:
+            rows = self.get_sources_config()
+        except Exception:
+            return {}
+        emails: Dict[Tuple[str, str], str] = {}
+        for row in rows:
+            regulator = str(row.get("Regulator") or "").strip().upper()
+            category = str(row.get("Category") or "").strip().upper()
+            email = str(row.get("Owner Email") or "").strip()
+            if regulator and "@" in email:
+                emails[(regulator, category)] = email
+        return emails
+
+    def get_owner_directory(self) -> Dict[str, str]:
+        """Owner name (lower-cased) -> email, built from the Sources tab's
+        'Owner' + 'Owner Email' columns. Lets reminders find the right person
+        from the Owner text on a Briefings row. Fail-open: empty."""
+        try:
+            rows = self.get_sources_config()
+        except Exception:
+            return {}
+        directory: Dict[str, str] = {}
+        for row in rows:
+            name = str(row.get("Owner") or "").strip().lower()
+            email = str(row.get("Owner Email") or "").strip()
+            if name and "@" in email:
+                directory.setdefault(name, email)
+        return directory
+
+    def get_owner_matrix(self) -> Dict[Tuple[str, str], str]:
+        """(Regulator, Category) -> default Owner, from an optional 'Owner'
+        column on the Sources tab. Used only to pre-fill the dashboard's Owner
+        cell for new briefings. Fail-open: no column / no Sheet -> empty."""
+        try:
+            rows = self.get_sources_config()
+        except Exception:
+            return {}
+        owners: Dict[Tuple[str, str], str] = {}
+        for row in rows:
+            regulator = str(row.get("Regulator") or "").strip().upper()
+            category = str(row.get("Category") or "").strip().upper()
+            owner = str(row.get("Owner") or "").strip()
+            if regulator and owner:
+                owners[(regulator, category)] = owner
+        return owners
+
     def get_schedule_config(self) -> Dict[str, str]:
         """Key/value rows of the 'Schedule' tab, merged over documented defaults
         (Foundation §3.2: business-day calendar default Mon-Fri, opening-check

@@ -29,7 +29,7 @@ alone only needed Viewer).
 import logging
 import os
 from datetime import datetime
-from typing import Any, List, Optional, Sequence, Tuple
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 from zoneinfo import ZoneInfo
 
 from models.issuance import BriefingRecord
@@ -181,6 +181,10 @@ class DashboardWriter:
         # Anything that isn't a real string id (unset, or a test double) means
         # "no Sheet to write to".
         self._spreadsheet_id = spreadsheet_id if isinstance(spreadsheet_id, str) else None
+        self._config_reader = config_reader
+        # Briefings actually appended by the latest log_briefings() call, so the
+        # owner-notification step only chases genuinely new rows.
+        self.last_added: List[BriefingRecord] = []
         try:
             self._tz = ZoneInfo(tz_name)
         except Exception:
@@ -244,6 +248,7 @@ class DashboardWriter:
     def log_briefings(self, briefings: Sequence[BriefingRecord]) -> int:
         """Appends one row per briefing not already logged. Returns rows
         added. Never raises."""
+        self.last_added = []
         if not briefings or not self.enabled:
             return 0
         try:
@@ -254,14 +259,25 @@ class DashboardWriter:
             numbers = ws.col_values(ISSUANCE_NO_COL)[1:]
             already = {(r.strip().upper(), n.strip()) for r, n in zip(regulators, numbers)}
 
+            owners: Dict[Tuple[str, str], str] = {}
+            try:
+                got = self._config_reader.get_owner_matrix()
+                owners = got if isinstance(got, dict) else {}
+            except Exception:
+                owners = {}  # no owner rules -> Owner stays blank, as before
+
             today = datetime.now(self._tz).strftime("%Y-%m-%d")
             rows: List[List[str]] = []
+            added: List[BriefingRecord] = []
             for b in briefings:
                 key = ((b.source_regulator or "").strip().upper(), (b.issuance_identifier or "").strip())
                 if key in already:
                     continue  # a re-sent briefing must not double-count
                 already.add(key)
+                added.append(b)
                 risk = (b.risk_priority_level or "UNAVAILABLE").strip()
+                reg_u = (b.source_regulator or "").strip().upper()
+                owner = owners.get((reg_u, (b.source_category or "").strip().upper())) or owners.get((reg_u, ""), "")
                 rows.append([
                     today,
                     _text(b.source_regulator),
@@ -275,15 +291,18 @@ class DashboardWriter:
                     _text(b.brokerage_entity_impact),
                     _text(b.suggested_action),
                     _archived_copy_cell(b),
-                    (b.official_source_link or "").strip(),  # left as-is so it stays a clickable link
+                    # Spaces -> %20: Sheets only auto-links a URL with no spaces
+                    # (BIR PDF names like "RR No. 5-2026.pdf" contain spaces).
+                    (b.official_source_link or "").strip().replace(" ", "%20"),
                     _text(b.completeness_status),
                     # Team-filled columns O..T: left blank for the team, except
                     # Status, which starts every briefing at "For Assessment".
-                    "", "", "", "", "", DEFAULT_STATUS,
+                    "", "", "", _text(owner), "", DEFAULT_STATUS,
                 ])
 
             if rows:
                 ws.append_rows(rows, value_input_option="USER_ENTERED", table_range="A1")
+                self.last_added = added
                 logger.info(f"Dashboard: logged {len(rows)} briefing(s) to the '{BRIEFINGS_TAB}' tab.")
             return len(rows)
         except Exception as e:
